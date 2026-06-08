@@ -14,10 +14,18 @@
 // Search radius in kilometers (adsb.lol API requires an integer)
 #define SEARCH_RADIUS_KM 50
 
-// HUB75 panel configuration
+// HUB75 panel configuration (64x32 on ESP32 Trinity)
 #define PANEL_RES_X 64
 #define PANEL_RES_Y 32
 #define PANEL_CHAIN 1
+#define PANEL_BRIGHTNESS 100
+
+// ESP32 Trinity settings — https://esp32trinity.com
+#define TRINITY_CLKPHASE false
+#define TRINITY_E_PIN -1
+
+// This panel has swapped green/blue data lines.
+#define SWAP_GREEN_BLUE 1
 
 // How often to refresh flight data (milliseconds)
 #define REFRESH_INTERVAL_MS 30000

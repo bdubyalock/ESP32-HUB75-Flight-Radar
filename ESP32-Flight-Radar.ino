@@ -7,40 +7,69 @@
 
 MatrixPanel_I2S_DMA *display = nullptr;
 
+uint16_t colBlack, colGreen, colYellow, colRed, colWhite;
+
 unsigned long lastFetchMs = 0;
 String nearestCallsign = "----";
 int nearestAltitude = 0;
 float nearestDistanceKm = 0.0;
 
+void setupDisplay() {
+  HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
+
+  if (TRINITY_E_PIN >= 0) {
+    mxconfig.gpio.e = TRINITY_E_PIN;
+  }
+  mxconfig.clkphase = TRINITY_CLKPHASE;
+
+#if SWAP_GREEN_BLUE
+  mxconfig.gpio.b1 = 26;
+  mxconfig.gpio.b2 = 12;
+  mxconfig.gpio.g1 = 27;
+  mxconfig.gpio.g2 = 13;
+#endif
+
+  display = new MatrixPanel_I2S_DMA(mxconfig);
+  display->begin();
+  display->setBrightness8(PANEL_BRIGHTNESS);
+  display->clearScreen();
+
+  colBlack = display->color565(0, 0, 0);
+  colGreen = display->color565(0, 255, 0);
+  colYellow = display->color565(255, 255, 0);
+  colRed = display->color565(255, 0, 0);
+  colWhite = display->color565(255, 255, 255);
+}
+
 void showStatus(const char *line1, const char *line2) {
-  display->fillScreen(display->color444(0, 0, 0));
+  display->fillScreen(colBlack);
   display->setTextSize(1);
   display->setTextWrap(false);
-  display->setTextColor(display->color444(0, 15, 15));
-  display->setCursor(2, 2);
+  display->setTextColor(colYellow);
+  display->setCursor(1, 2);
   display->print(line1);
-  display->setCursor(2, 12);
+  display->setTextColor(colGreen);
+  display->setCursor(1, 14);
   display->print(line2);
 }
 
 void showFlight() {
-  display->fillScreen(display->color444(0, 0, 0));
+  display->fillScreen(colBlack);
   display->setTextSize(1);
   display->setTextWrap(false);
 
-  display->setTextColor(display->color444(15, 15, 0));
-  display->setCursor(2, 2);
-  display->print("NEAREST FLIGHT");
+  display->setTextColor(colYellow);
+  display->setCursor(1, 2);
+  display->print("NEAREST");
 
-  display->setTextColor(display->color444(0, 15, 15));
-  display->setCursor(2, 12);
+  display->setTextColor(colGreen);
+  display->setCursor(1, 12);
   display->print(nearestCallsign);
 
-  display->setTextColor(display->color444(15, 15, 15));
-  display->setCursor(2, 22);
-  display->print("ALT ");
+  display->setTextColor(colYellow);
+  display->setCursor(1, 22);
   display->print(nearestAltitude);
-  display->print("ft  ");
+  display->print("ft ");
   display->print(nearestDistanceKm, 1);
   display->print("km");
 }
@@ -102,14 +131,6 @@ bool fetchNearestFlight() {
   return true;
 }
 
-void setupDisplay() {
-  HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
-  display = new MatrixPanel_I2S_DMA(mxconfig);
-  display->begin();
-  display->setBrightness8(64);
-  display->clearScreen();
-}
-
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -133,7 +154,7 @@ void setup() {
     showStatus("WiFi OK", WiFi.localIP().toString().c_str());
     delay(1500);
   } else {
-    showStatus("WiFi FAILED", "Check config.h");
+    showStatus("WiFi FAIL", "config.h");
     return;
   }
 
@@ -141,13 +162,13 @@ void setup() {
     showFlight();
     lastFetchMs = millis();
   } else {
-    showStatus("API ERROR", "Retrying...");
+    showStatus("API ERR", "Retrying");
   }
 }
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
-    showStatus("WiFi LOST", "Reconnecting");
+    showStatus("WiFi LOST", "Reconnect");
     WiFi.reconnect();
     delay(1000);
     return;
@@ -157,7 +178,7 @@ void loop() {
     if (fetchNearestFlight()) {
       showFlight();
     } else {
-      showStatus("API ERROR", "Will retry");
+      showStatus("API ERR", "Retrying");
     }
     lastFetchMs = millis();
   }

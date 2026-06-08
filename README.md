@@ -26,6 +26,16 @@ Add the Espressif ESP32 board package in Arduino IDE:
 https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 ```
 
+## Display test (start here)
+
+Before wiring up Wi-Fi or flight data, verify your 64×32 panel works:
+
+1. In Arduino IDE, open `DisplayTest/DisplayTest.ino` (not the main sketch).
+2. Select your ESP32 board and port under **Tools**.
+3. Upload and watch the panel cycle through color, border, text, and layout tests every 4 seconds.
+
+If the display is blank, garbled, or wrong colors, fix wiring/power/pins before moving on.
+
 ## Setup
 
 1. Clone this repo into your Arduino sketchbook or open it directly in Arduino IDE 2.x.
