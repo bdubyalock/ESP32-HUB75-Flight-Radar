@@ -27,5 +27,16 @@
 // This panel has swapped green/blue data lines.
 #define SWAP_GREEN_BLUE 1
 
-// How often to refresh flight data (milliseconds)
-#define REFRESH_INTERVAL_MS 30000
+// US Eastern: UTC-5 standard, +1h daylight (Mar–Nov)
+#define GMT_OFFSET_SEC (-5 * 3600)
+#define DAYLIGHT_OFFSET_SEC 3600
+
+// No API polling during these local hours [start, end)
+#define QUIET_HOUR_START 0
+#define QUIET_HOUR_END 6
+
+// Poll interval during active hours (milliseconds)
+#define REFRESH_INTERVAL_MS 300000  // 5 minutes
+
+// Display brightness during quiet hours (0-255)
+#define QUIET_BRIGHTNESS 20
