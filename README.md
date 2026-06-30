@@ -49,7 +49,7 @@ If the display is blank, garbled, or wrong colors, fix wiring/power/pins before 
 4. Select your ESP32 board and port under **Tools**.
 5. Open and upload `ESP32-HUB75-Flight-Radar.ino` (folder name must match the sketch name).
 
-On boot, the display connects to Wi-Fi, queries the nearest aircraft within your configured radius, and refreshes on a schedule that stays within your daily API budget. Between midnight and 6 AM Eastern it alternates runway-light and idle-radar animations and skips polling.
+On boot, the display connects to Wi-Fi, queries the nearest aircraft within your configured radius, and refreshes on a schedule that stays within your daily API budget. Whenever aircraft are in range it shows them; when none are returned it falls back to a radar screensaver with a rotating sweep and "NO TRAFFIC" text. During quiet hours (10 PM–6 AM Eastern by default) the display is dimmed to `QUIET_BRIGHTNESS`, but polling continues so live traffic is still shown if present.
 
 ## Configuration
 
@@ -62,7 +62,8 @@ All settings live in `config.h`:
 | `SEARCH_RADIUS_KM` | How far to search for aircraft |
 | `PANEL_RES_X` / `PANEL_RES_Y` / `PANEL_CHAIN` | Matrix panel geometry |
 | `REFRESH_INTERVAL_MS` | Time between API polls during active hours (default: 5 minutes) |
-| `QUIET_HOUR_START` / `QUIET_HOUR_END` | Local hours when polling is paused |
+| `QUIET_HOUR_START` / `QUIET_HOUR_END` | Local hours when the display is dimmed (may wrap past midnight) |
+| `QUIET_BRIGHTNESS` | Display brightness during quiet hours |
 | `GMT_OFFSET_SEC` / `DAYLIGHT_OFFSET_SEC` | Local timezone offset (default: US Eastern) |
 
 ## API

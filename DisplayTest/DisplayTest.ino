@@ -17,6 +17,8 @@ enum TestScreen {
   SCREEN_FULL_GREEN,
   SCREEN_FULL_BLUE,
   SCREEN_FULL_YELLOW,
+  SCREEN_BLUE_TOP_HALF,
+  SCREEN_BLUE_BOTTOM_HALF,
   SCREEN_ROWS,
   SCREEN_COLORS,
   SCREEN_BORDER,
@@ -28,7 +30,7 @@ enum TestScreen {
 
 uint8_t currentScreen = 0;
 unsigned long screenStartedMs = 0;
-const unsigned long HOLD_MS = 3500;
+const unsigned long HOLD_MS = 10000;
 
 void setupDisplay() {
   HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
@@ -47,12 +49,22 @@ void setupDisplay() {
   mxconfig.gpio.g2 = 13;
 #endif
 
+#if DIAGNOSTIC_SWAP_RED_BLUE
+  mxconfig.gpio.r1 = 27;
+  mxconfig.gpio.b1 = 25;
+  mxconfig.gpio.r2 = 13;
+  mxconfig.gpio.b2 = 14;
+#endif
+
 #if USE_FM6126A_DRIVER
   mxconfig.driver = HUB75_I2S_CFG::FM6126A;
 #endif
 
   display = new MatrixPanel_I2S_DMA(mxconfig);
   display->begin();
+#if PANEL_LATCH_BLANKING > 1
+  display->setLatBlanking(PANEL_LATCH_BLANKING);
+#endif
   display->setBrightness8(PANEL_BRIGHTNESS);
   display->clearScreen();
 
@@ -88,6 +100,18 @@ void showFullBlue() {
 
 void showFullYellow() {
   display->fillScreen(colYellow);
+}
+
+// Isolates B1 (top half, rows 0-15) to tell B1 and B2 apart.
+void showBlueTopHalf() {
+  display->fillScreen(colBlack);
+  display->fillRect(0, 0, PANEL_RES_X, PANEL_RES_Y / 2, colBlue);
+}
+
+// Isolates B2 (bottom half, rows 16-31) to tell B1 and B2 apart.
+void showBlueBottomHalf() {
+  display->fillScreen(colBlack);
+  display->fillRect(0, PANEL_RES_Y / 2, PANEL_RES_X, PANEL_RES_Y / 2, colBlue);
 }
 
 void showRows() {
@@ -154,6 +178,8 @@ const char *screenName(uint8_t screen) {
     case SCREEN_FULL_GREEN: return "FULL GREEN";
     case SCREEN_FULL_BLUE: return "FULL BLUE";
     case SCREEN_FULL_YELLOW: return "FULL YELLOW";
+    case SCREEN_BLUE_TOP_HALF: return "BLUE TOP HALF (B1)";
+    case SCREEN_BLUE_BOTTOM_HALF: return "BLUE BOTTOM HALF (B2)";
     case SCREEN_ROWS: return "ROWS";
     case SCREEN_COLORS: return "COLORS";
     case SCREEN_BORDER: return "BORDER";
@@ -170,6 +196,8 @@ void showScreen(uint8_t screen) {
     case SCREEN_FULL_GREEN: showFullGreen(); break;
     case SCREEN_FULL_BLUE: showFullBlue(); break;
     case SCREEN_FULL_YELLOW: showFullYellow(); break;
+    case SCREEN_BLUE_TOP_HALF: showBlueTopHalf(); break;
+    case SCREEN_BLUE_BOTTOM_HALF: showBlueBottomHalf(); break;
     case SCREEN_ROWS: showRows(); break;
     case SCREEN_COLORS: showColors(); break;
     case SCREEN_BORDER: showBorder(); break;
@@ -183,7 +211,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("DisplayTest: ESP32 Trinity 64x32");
-  Serial.println("Reverted config — FM6126A off, E pin off, G/B swap on");
+  Serial.println("Config — swap off, clkphase true, FM6126A off");
 
   setupDisplay();
 
