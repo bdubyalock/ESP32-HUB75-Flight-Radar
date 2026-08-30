@@ -26,6 +26,31 @@ Install these through the Arduino Library Manager or clone into your sketchbook 
 - [ArduinoJson](https://arduinojson.org/)
 - [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) (dependency of the matrix driver)
 
+#### This repository has been updated to use PlatformIO IDE
+Use the following platformio.ini file:
+```
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+
+lib_deps =
+    bblanchon/ArduinoJson
+    mrfaptastic/ESP32 HUB75 LED MATRIX PANEL DMA Display
+    adafruit/Adafruit GFX Library
+    adafruit/Adafruit BusIO
+```
+
 ### Board support
 
 Add the Espressif ESP32 board package in Arduino IDE:

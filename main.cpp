@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <Arduino.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -88,6 +89,9 @@ String lastRenderedCallsign = "";
 void refreshFlightDisplay();
 void showFlight();
 uint8_t activeBrightness();
+void clearRoute();
+void resetAircraftDisplayTimer();
+void copyStringField(char *dest, size_t destSize, const char *src);
 
 void setupDisplay() {
   HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
@@ -1656,11 +1660,15 @@ bool fetchAircraftList() {
     HTTPClient http;
     http.begin(url);
     http.setTimeout(10000);
+    http.setUserAgent("Mozilla/5.0");
+    http.addHeader("Accept", "application/json");
 
     statusCode = http.GET();
     if (statusCode != HTTP_CODE_OK) {
-      Serial.printf("Flight request failed: HTTP %d (try %d/%d)\n",
+      Serial.printf("Flight request failed at URL %s: HTTP %d (try %d/%d)\n", url.c_str(),
                     statusCode, attempt, FLIGHT_FETCH_RETRIES);
+       Serial.print("WiFi IP: ");
+      Serial.println(WiFi.localIP());
       http.end();
       if (attempt < FLIGHT_FETCH_RETRIES) {
         delay(500 * attempt);
