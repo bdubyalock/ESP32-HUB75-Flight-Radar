@@ -1,6 +1,6 @@
 #pragma once
 
-// Copy this file to config.h and fill in your values.
+// Copy this file to include/config.h and fill in your values.
 // config.h is gitignored and will not be committed.
 
 // WiFi credentials
