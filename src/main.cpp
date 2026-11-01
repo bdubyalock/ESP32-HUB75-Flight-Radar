@@ -3,11 +3,15 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <ESPmDNS.h>
+#include <LittleFS.h>
+#include <WebServer.h>
 #include <time.h>
 #include <math.h>
 #include <cstring>
 #include <strings.h>
 
+#include "app_config.h"
 #include "config.h"
 
 enum LayoutSlotKind { LAYOUT_TEXT, LAYOUT_COMPASS };
@@ -19,6 +23,20 @@ struct LayoutSlot {
 };
 
 MatrixPanel_I2S_DMA *display = nullptr;
+WebServer configServer(80);
+AppConfig pendingConfig;
+bool configWifiChangePending = false;
+bool configWifiChangeStartPending = false;
+bool configApplySucceeded = false;
+bool configSuccessScreenActive = false;
+bool configSuccessIpScreenActive = false;
+bool mdnsStarted = false;
+String configApplyMessage;
+unsigned long configWifiChangeStartedMs = 0;
+unsigned long configSuccessScreenStartedMs = 0;
+const unsigned long CONFIG_WIFI_CONNECT_TIMEOUT_MS = 45000;
+const unsigned long CONFIG_SUCCESS_SSID_SCREEN_MS = 1500;
+const unsigned long CONFIG_SUCCESS_IP_SCREEN_MS = 2000;
 
 uint16_t colBlack, colGreen, colYellow, colRed, colWhite;
 uint16_t colCyan, colAmber;
@@ -85,13 +103,20 @@ unsigned long lastDisplayCycleMs = 0;
 unsigned long aircraftDisplayStartedMs = 0;
 bool bottomShowsRoutePhase = false;
 String lastRenderedCallsign = "";
+bool showCallsignInTypeSlot = false;
+bool callsignTypeSwapPending = false;
+unsigned long typeSlotStartedMs = 0;
 
 void refreshFlightDisplay();
 void showFlight();
 uint8_t activeBrightness();
 void clearRoute();
 void resetAircraftDisplayTimer();
+void updateAircraftTypeSlotIfNeeded();
 void copyStringField(char *dest, size_t destSize, const char *src);
+void setupConfigServer();
+void updateConfigWifiChange();
+void startFlightMdns();
 
 void setupDisplay() {
   HUB75_I2S_CFG mxconfig(PANEL_RES_X, PANEL_RES_Y, PANEL_CHAIN);
@@ -248,7 +273,343 @@ void printClippedCentered(int areaX, int areaW, int y, const char *text,
 void showStatus(const char *line1, const char *line2) {
   display->fillScreen(colBlack);
   printClipped(1, 2, line1, colTextSecondary);
-  printClipped(1, 14, line2, colTextPrimary);
+
+  const int maxChars = (PANEL_RES_X - 2) / TEXT_CHAR_W;
+  if (strlen(line2) <= (size_t)maxChars) {
+    printClipped(1, 14, line2, colTextPrimary);
+    return;
+  }
+
+  char firstPart[40];
+  snprintf(firstPart, sizeof(firstPart), "%.*s", maxChars, line2);
+  printClipped(1, 14, firstPart, colTextPrimary);
+  printClipped(1, 22, line2 + maxChars, colTextPrimary);
+}
+
+void sendJsonResponse(int statusCode, JsonDocument &response) {
+  String body;
+  serializeJson(response, body);
+  configServer.sendHeader("Cache-Control", "no-store");
+  configServer.send(statusCode, "application/json", body);
+}
+
+bool readConfigString(JsonObjectConst object, const char *key, String &value,
+                      size_t maxLength, bool allowEmpty = false) {
+  JsonVariantConst field = object[key];
+  if (!field.is<const char *>()) {
+    return false;
+  }
+
+  value = field.as<const char *>();
+  return value.length() <= maxLength && (allowEmpty || value.length() > 0);
+}
+
+bool readConfigNumber(JsonObjectConst object, const char *key, double &value) {
+  JsonVariantConst field = object[key];
+  if (!field.is<int>() && !field.is<double>()) {
+    return false;
+  }
+
+  value = field.as<double>();
+  return isfinite(value);
+}
+
+bool configurationChanged(const AppConfig &left, const AppConfig &right) {
+  const double numericTolerance = 0.0000001;
+  return left.wifiSSID != right.wifiSSID ||
+         left.wifiPassword != right.wifiPassword ||
+         left.aeroApiKey != right.aeroApiKey ||
+         left.aeroApiURL != right.aeroApiURL ||
+         left.mqttIP != right.mqttIP || left.mqttPort != right.mqttPort ||
+         left.mqttTopic != right.mqttTopic ||
+         left.mqttDataName != right.mqttDataName ||
+         fabs(left.latitude - right.latitude) > numericTolerance ||
+         fabs(left.longitude - right.longitude) > numericTolerance ||
+         fabs(left.searchRadius - right.searchRadius) > numericTolerance;
+}
+
+void logConfigurationChanges(const AppConfig &previous,
+                             const AppConfig &updated) {
+  const double numericTolerance = 0.0000001;
+
+  if (previous.wifiSSID != updated.wifiSSID) {
+    Serial.printf("Configuration changed: Wi-Fi SSID=%s\n", updated.wifiSSID.c_str());
+  }
+  if (previous.wifiPassword != updated.wifiPassword) {
+    Serial.println("Configuration changed: Wi-Fi password");
+  }
+  if (previous.aeroApiKey != updated.aeroApiKey) {
+    Serial.println("Configuration changed: AeroAPI key");
+  }
+  if (previous.aeroApiURL != updated.aeroApiURL) {
+    Serial.printf("Configuration changed: AeroAPI URL=%s\n",
+                  updated.aeroApiURL.c_str());
+  }
+  if (previous.mqttIP != updated.mqttIP) {
+    Serial.printf("Configuration changed: MQTT address=%s\n",
+                  updated.mqttIP.c_str());
+  }
+  if (previous.mqttPort != updated.mqttPort) {
+    Serial.printf("Configuration changed: MQTT port=%u\n",
+                  updated.mqttPort);
+  }
+  if (previous.mqttTopic != updated.mqttTopic) {
+    Serial.printf("Configuration changed: MQTT topic=%s\n",
+                  updated.mqttTopic.c_str());
+  }
+  if (previous.mqttDataName != updated.mqttDataName) {
+    Serial.printf("Configuration changed: MQTT data name=%s\n",
+                  updated.mqttDataName.c_str());
+  }
+  if (fabs(previous.latitude - updated.latitude) > numericTolerance) {
+    Serial.printf("Configuration changed: latitude=%.6f\n", updated.latitude);
+  }
+  if (fabs(previous.longitude - updated.longitude) > numericTolerance) {
+    Serial.printf("Configuration changed: longitude=%.6f\n",
+                  updated.longitude);
+  }
+  if (fabs(previous.searchRadius - updated.searchRadius) > numericTolerance) {
+    Serial.printf("Configuration changed: search radius=%.2f NM\n",
+                  updated.searchRadius);
+  }
+}
+
+void handleGetConfiguration() {
+  JsonDocument response;
+  response["wifiSSID"] = config.wifiSSID;
+  response["aeroApiURL"] = config.aeroApiURL;
+  response["mqttIP"] = config.mqttIP;
+  response["mqttPort"] = config.mqttPort;
+  response["mqttTopic"] = config.mqttTopic;
+  response["mqttDataName"] = config.mqttDataName;
+  response["latitude"] = config.latitude;
+  response["longitude"] = config.longitude;
+  response["searchRadius"] = config.searchRadius;
+  sendJsonResponse(200, response);
+}
+
+void handleGetConfigurationStatus() {
+  JsonDocument response;
+  response["pending"] = configWifiChangePending;
+  response["success"] = configApplySucceeded;
+  response["message"] = configApplyMessage;
+  sendJsonResponse(200, response);
+}
+
+void handlePostConfiguration() {
+  if (configWifiChangePending) {
+    JsonDocument response;
+    response["success"] = false;
+    response["message"] = "A Wi-Fi configuration attempt is already in progress.";
+    sendJsonResponse(409, response);
+    return;
+  }
+
+  JsonDocument request;
+  DeserializationError error = deserializeJson(request, configServer.arg("plain"));
+  if (error || !request.is<JsonObject>()) {
+    JsonDocument response;
+    response["success"] = false;
+    response["message"] = "Invalid configuration JSON.";
+    sendJsonResponse(400, response);
+    return;
+  }
+
+  JsonObjectConst fields = request.as<JsonObjectConst>();
+  AppConfig candidate = config;
+  String submittedPassword;
+  String submittedApiKey;
+  double mqttPort = 0;
+
+  bool valid =
+      readConfigString(fields, "wifiSSID", candidate.wifiSSID, 32) &&
+      readConfigString(fields, "wifiPassword", submittedPassword, 63, true) &&
+      readConfigString(fields, "aeroApiKey", submittedApiKey, 256, true) &&
+      readConfigString(fields, "aeroApiURL", candidate.aeroApiURL, 192) &&
+      readConfigString(fields, "mqttIP", candidate.mqttIP, 128) &&
+      readConfigNumber(fields, "mqttPort", mqttPort) &&
+      readConfigString(fields, "mqttTopic", candidate.mqttTopic, 128) &&
+      readConfigString(fields, "mqttDataName", candidate.mqttDataName, 64) &&
+      readConfigNumber(fields, "latitude", candidate.latitude) &&
+      readConfigNumber(fields, "longitude", candidate.longitude) &&
+      readConfigNumber(fields, "searchRadius", candidate.searchRadius);
+
+  if (!valid || mqttPort < 1 || mqttPort > 65535 ||
+      floor(mqttPort) != mqttPort || candidate.latitude < -90 ||
+      candidate.latitude > 90 || candidate.longitude < -180 ||
+      candidate.longitude > 180 || candidate.searchRadius < 0.5 ||
+      candidate.searchRadius > 100.0 ||
+      (!candidate.aeroApiURL.startsWith("http://") &&
+       !candidate.aeroApiURL.startsWith("https://"))) {
+    JsonDocument response;
+    response["success"] = false;
+    response["message"] = "Configuration values are missing or outside allowed limits.";
+    sendJsonResponse(400, response);
+    return;
+  }
+
+  candidate.mqttPort = static_cast<uint16_t>(mqttPort);
+  if (submittedPassword.length() > 0) {
+    candidate.wifiPassword = submittedPassword;
+  }
+  if (submittedApiKey.length() > 0) {
+    candidate.aeroApiKey = submittedApiKey;
+  }
+
+  if (!configurationChanged(config, candidate)) {
+    configApplySucceeded = true;
+    configApplyMessage = "Configuration is unchanged.";
+    JsonDocument response;
+    response["success"] = true;
+    response["pending"] = false;
+    response["message"] = configApplyMessage;
+    sendJsonResponse(200, response);
+    return;
+  }
+
+  const bool wifiChanged = candidate.wifiSSID != config.wifiSSID ||
+                           candidate.wifiPassword != config.wifiPassword;
+  if (!wifiChanged) {
+    AppConfig previousConfig = config;
+    config = candidate;
+    if (!saveConfiguration()) {
+      config = previousConfig;
+      JsonDocument response;
+      response["success"] = false;
+      response["message"] = "Could not save configuration to flash.";
+      sendJsonResponse(500, response);
+      return;
+    }
+
+    logConfigurationChanges(previousConfig, config);
+    lastFetchMs = 0;
+    configApplySucceeded = true;
+    configApplyMessage = "Configuration saved.";
+    JsonDocument response;
+    response["success"] = true;
+    response["pending"] = false;
+    response["message"] = configApplyMessage;
+    sendJsonResponse(200, response);
+    return;
+  }
+
+  pendingConfig = candidate;
+  configWifiChangePending = true;
+  configApplySucceeded = false;
+  configApplyMessage = "Testing the new Wi-Fi credentials.";
+  JsonDocument response;
+  response["success"] = true;
+  response["pending"] = true;
+  response["message"] = configApplyMessage;
+  sendJsonResponse(202, response);
+  configWifiChangeStartPending = true;
+}
+
+void showConfigFailure(const String &originalSSID) {
+  display->fillScreen(colBlack);
+  printClippedCentered(0, PANEL_RES_X, 0, "Failed to", colRed);
+  printClippedCentered(0, PANEL_RES_X, 8, "Config!", colRed);
+  printClippedCentered(0, PANEL_RES_X, 16, "Original WiFi:", colTextSecondary);
+  printClippedCentered(0, PANEL_RES_X, 24, originalSSID.c_str(), colTextPrimary);
+}
+
+void finishWifiConfigurationFailure(const char *reason) {
+  configWifiChangePending = false;
+  configApplySucceeded = false;
+  configApplyMessage = reason;
+
+  Serial.printf("Wi-Fi configuration failed: %s; restoring SSID %s\n",
+                reason, config.wifiSSID.c_str());
+  WiFi.begin(config.wifiSSID.c_str(), config.wifiPassword.c_str());
+  showConfigFailure(config.wifiSSID);
+}
+
+void updateConfigWifiChange() {
+  if (configWifiChangeStartPending) {
+    configWifiChangeStartPending = false;
+    configWifiChangeStartedMs = millis();
+    WiFi.disconnect(false, false);
+    WiFi.begin(pendingConfig.wifiSSID.c_str(),
+               pendingConfig.wifiPassword.c_str());
+    return;
+  }
+
+  if (!configWifiChangePending) {
+    return;
+  }
+
+  if (millis() - configWifiChangeStartedMs >= 1000 &&
+      WiFi.status() == WL_CONNECTED &&
+      WiFi.SSID() == pendingConfig.wifiSSID) {
+    AppConfig previousConfig = config;
+    config = pendingConfig;
+    if (!saveConfiguration()) {
+      config = previousConfig;
+      finishWifiConfigurationFailure("Wi-Fi connected, but flash save failed.");
+      return;
+    }
+
+    logConfigurationChanges(previousConfig, config);
+    configWifiChangePending = false;
+    configApplySucceeded = true;
+    configApplyMessage = "Wi-Fi connected and configuration saved.";
+    lastFetchMs = 0;
+    configSuccessScreenActive = true;
+    configSuccessIpScreenActive = false;
+    configSuccessScreenStartedMs = millis();
+    if (mdnsStarted) {
+      MDNS.end();
+      mdnsStarted = false;
+    }
+    startFlightMdns();
+    showStatus("WiFi OK", config.wifiSSID.c_str());
+    Serial.printf("Wi-Fi configuration saved for SSID %s\n",
+                  config.wifiSSID.c_str());
+    return;
+  }
+
+  if (millis() - configWifiChangeStartedMs >=
+      CONFIG_WIFI_CONNECT_TIMEOUT_MS) {
+    finishWifiConfigurationFailure("Could not connect within 45 seconds.");
+  }
+}
+
+void setupConfigServer() {
+  auto serveConfigurationPage = []() {
+    File page = LittleFS.open("/config.html", FILE_READ);
+    if (!page) {
+      configServer.send(500, "text/plain",
+                        "Configuration page is missing from LittleFS.");
+      return;
+    }
+    configServer.streamFile(page, "text/html");
+    page.close();
+  };
+  configServer.on("/", HTTP_GET, []() {
+    configServer.sendHeader("Location", "/config.html");
+    configServer.send(302, "text/plain", "");
+  });
+  configServer.on("/config.html", HTTP_GET, serveConfigurationPage);
+  configServer.on("/api/config", HTTP_GET, handleGetConfiguration);
+  configServer.on("/api/config", HTTP_POST, handlePostConfiguration);
+  configServer.on("/api/config/status", HTTP_GET, handleGetConfigurationStatus);
+  configServer.onNotFound([]() {
+    configServer.send(404, "text/plain", "Not found");
+  });
+  configServer.begin();
+  Serial.println("Configuration web server started on port 80");
+}
+
+void startFlightMdns() {
+  if (!MDNS.begin(MDNS_HOSTNAME)) {
+    Serial.println("mDNS startup failed; use the device IP address");
+    return;
+  }
+
+  MDNS.addService("http", "tcp", 80);
+  mdnsStarted = true;
+  Serial.printf("Configuration page available at http://%s.local/config.html\n",
+                MDNS_HOSTNAME);
 }
 
 #if COLOR_TEST_ON_BOOT
@@ -1480,6 +1841,17 @@ void resetAircraftDisplayTimer() {
   bottomShowsRoutePhase = bottomShowsRouteView();
 }
 
+void updateAircraftTypeSlotIfNeeded() {
+  if (!callsignTypeSwapPending ||
+      millis() - typeSlotStartedMs < REFRESH_INTERVAL_MS / 2) {
+    return;
+  }
+
+  callsignTypeSwapPending = false;
+  showCallsignInTypeSlot = true;
+  showFlight();
+}
+
 void updateBottomPhaseIfNeeded() {
   bool routePhase = bottomShowsRouteView();
   if (routePhase != bottomShowsRoutePhase) {
@@ -1547,8 +1919,12 @@ void showFlight() {
 
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_CALLSIGN,
                        nearestCallsign.c_str(), colCallsign);
+  const char *typeSlotText = showCallsignInTypeSlot
+                                 ? nearestCallsign.c_str()
+                                 : nearestAircraftType.c_str();
+  uint16_t typeSlotColor = showCallsignInTypeSlot ? colCallsign : colType;
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
-                       nearestAircraftType.c_str(), colType);
+                       typeSlotText, typeSlotColor);
 
   display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
                          display->color565(30, 30, 30));
@@ -1647,11 +2023,12 @@ bool fetchAircraftList() {
   }
 
   String url = "https://api.adsb.lol/v2/lat/";
-  url += String(RECEIVER_LAT, 6);
+  url += String(config.latitude, 6);
   url += "/lon/";
-  url += String(RECEIVER_LON, 6);
+  url += String(config.longitude, 6);
   url += "/dist/";
-  url += String(TRACK_RADIUS_KM);
+  const int radiusKm = static_cast<int>(lround(config.searchRadius * 1.852));
+  url += String(radiusKm);
 
   String payload;
   int statusCode = 0;
@@ -1728,7 +2105,8 @@ bool fetchAircraftList() {
   }
 
   Serial.printf("Tracking %d aircraft within %dkm\n",
-                trackedAircraftCount, TRACK_RADIUS_KM);
+                trackedAircraftCount,
+                static_cast<int>(lround(config.searchRadius * 1.852)));
   for (int i = 0; i < trackedAircraftCount; i++) {
     Serial.printf("  %d) %s %s %.1fkm%s\n", i + 1,
                   trackedAircraft[i].callsign, trackedAircraft[i].type,
@@ -1740,6 +2118,8 @@ bool fetchAircraftList() {
 
 void refreshFlightDisplay() {
   hasFlightData = true;
+  showCallsignInTypeSlot = false;
+  callsignTypeSwapPending = false;
 
   // No aircraft in range: let the loop draw the screensaver instead of an
   // empty flight card.
@@ -1755,6 +2135,11 @@ void refreshFlightDisplay() {
   showFlight();
 
   if (fetchRoute(nearestCallsign)) {
+    resetAircraftDisplayTimer();
+    if (REFRESH_INTERVAL_MS > 1000) {
+      typeSlotStartedMs = millis();
+      callsignTypeSwapPending = true;
+    }
     showFlight();
   }
 }
@@ -1829,11 +2214,11 @@ bool connectWiFi(unsigned long timeoutMs) {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-  WiFi.disconnect(true);
-  delay(100);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  //WiFi.disconnect(true)
+  //delay(100);
+  WiFi.begin(config.wifiSSID.c_str(), config.wifiPassword.c_str());
 
-  showStatus("WiFi...", WIFI_SSID);
+  showStatus("WiFi...", config.wifiSSID.c_str());
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
@@ -1845,6 +2230,21 @@ bool connectWiFi(unsigned long timeoutMs) {
     wifiEverConnected = true;
     Serial.print("WiFi connected: ");
     Serial.println(WiFi.localIP());
+    /*Added for debug purposes:
+    Serial.printf("DNS server 1: %s\n", WiFi.dnsIP(0).toString().c_str());
+    Serial.printf("DNS server 2: %s\n", WiFi.dnsIP(1).toString().c_str());
+
+    IPAddress resolved;
+    int result = WiFi.hostByName("api.adsb.lol", resolved);
+    Serial.printf("api.adsb.lol lookup: %s",
+                  result == 1 ? resolved.toString().c_str() : "FAILED");
+    Serial.println();
+
+    result = WiFi.hostByName("example.com", resolved);
+    Serial.printf("example.com lookup: %s",
+                  result == 1 ? resolved.toString().c_str() : "FAILED");
+    Serial.println();
+    */ //End "Added for debug purposes"
     showStatus("WiFi OK", WiFi.localIP().toString().c_str());
     delay(1500);
     return true;
@@ -1860,6 +2260,10 @@ void setup() {
   delay(500);
   Serial.println("Boot: Flight Radar (G/B swap on)");
 
+  if (!LittleFS.begin(false)) {
+    Serial.println("LittleFS mount failed; web configuration page unavailable");
+  }
+  loadConfiguration();
   setupDisplay();
 
 #if COLOR_TEST_ON_BOOT
@@ -1872,6 +2276,8 @@ void setup() {
     return;
   }
 
+  startFlightMdns();
+  setupConfigServer();
   syncTime();
 
   // Initial fetch + render; loop() then keeps polling on schedule. Planes are
@@ -1893,6 +2299,46 @@ void setup() {
 }
 
 void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    configServer.handleClient();
+  }
+  updateConfigWifiChange();
+
+  if (configSuccessScreenActive) {
+    unsigned long screenDuration = configSuccessIpScreenActive
+                                       ? CONFIG_SUCCESS_IP_SCREEN_MS
+                                       : CONFIG_SUCCESS_SSID_SCREEN_MS;
+    if (millis() - configSuccessScreenStartedMs >= screenDuration &&
+        !configSuccessIpScreenActive) {
+      configSuccessIpScreenActive = true;
+      configSuccessScreenStartedMs = millis();
+      showStatus("WiFi OK", WiFi.localIP().toString().c_str());
+      delay(40);
+      return;
+    }
+
+    if (configSuccessIpScreenActive &&
+        millis() - configSuccessScreenStartedMs >= screenDuration) {
+      configSuccessScreenActive = false;
+      configSuccessIpScreenActive = false;
+      if (trackedAircraftCount > 0) {
+        showFlight();
+      } else {
+        screensaverActive = false;
+        initQuietHours();
+        updateQuietHoursDisplay();
+      }
+    } else {
+      delay(40);
+      return;
+    }
+  }
+
+  if (configWifiChangePending) {
+    delay(40);
+    return;
+  }
+
   if (WiFi.status() != WL_CONNECTED) {
     if (millis() - lastWifiAttemptMs >= 10000) {
       lastWifiAttemptMs = millis();
@@ -1931,6 +2377,7 @@ void loop() {
       lastDisplayCycleMs = millis();
       cycleDisplayedAircraft();
     } else {
+      updateAircraftTypeSlotIfNeeded();
       updateBottomPhaseIfNeeded();
     }
     delay(40);

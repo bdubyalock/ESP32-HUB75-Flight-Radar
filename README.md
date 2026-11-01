@@ -75,10 +75,10 @@ If the display is blank, garbled, or wrong colors, fix wiring/power/pins before 
 2. Copy the config template:
 
    ```bash
-   cp config.example.h config.h
+   cp config.example.h include/config.h
    ```
 
-3. Edit `config.h` with your Wi-Fi credentials and receiver location.
+3. Edit `include/config.h` with your Wi-Fi credentials and receiver location.
 4. Select your ESP32 board and port under **Tools**.
 5. Open and upload `ESP32-HUB75-Flight-Radar.ino` (folder name must match the sketch name).
 
@@ -86,7 +86,32 @@ On boot, the display connects to Wi-Fi, queries the nearest aircraft within your
 
 ## Configuration
 
-All settings live in `config.h`:
+Compile-time settings and board/display options live in `include/config.h`.
+The CONFIGURATION form is served by the ESP32 and stores editable settings in
+NVS flash using Preferences; those values override the `config.h` defaults on
+boot. The FLIGHT ENTRY panel is not connected yet.
+
+With PlatformIO, build and upload the firmware:
+
+```bash
+pio run
+pio run -t upload
+```
+
+The standard PlatformIO Upload target (including the VS Code Upload button)
+uploads the LittleFS filesystem image first, then the firmware. To upload only
+the page filesystem later, run `pio run -t uploadfs`.
+
+After the ESP32 connects to Wi-Fi, open
+`http://<MDNS_HOSTNAME>.local/config.html` (default:
+`http://flightradar.local/config.html`) or use the device IP address.
+`MDNS_HOSTNAME` is set in `include/config.h` without the `.local` suffix.
+A changed network name or password is tested for up to 45 seconds before any
+settings are saved. Password and AeroAPI key fields are write-only; leave them
+blank to keep their current values. The configuration page uses plain HTTP
+and has no login, so use it only on a trusted local network.
+
+Other settings remain compile-time constants:
 
 | Setting | Description |
 | --- | --- |

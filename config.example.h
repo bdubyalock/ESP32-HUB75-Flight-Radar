@@ -54,3 +54,16 @@
 
 // Display brightness during quiet hours: 20% of normal brightness
 #define QUIET_BRIGHTNESS (PANEL_BRIGHTNESS / 5)
+
+// mDNS hostname (without the .local suffix)
+#define MDNS_HOSTNAME "flightradar"
+
+// AeroAPI configuration
+#define AEROAPI_KEY "your-aeroapi-key"
+#define AEROAPI_URL "https://aeroapi.flightaware.com/aeroapi/"
+
+// MQTT configuration
+#define MQTT_IP "your-mqtt-server"
+#define MQTT_PORT 1883
+#define MQTT_TOPIC "flightradar"
+#define MQTT_DATA_NAME "Flight Radar"
