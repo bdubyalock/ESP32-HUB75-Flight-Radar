@@ -5,9 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flight Tracker Config Panel</title>
 
+    <script>
+      window.setTimeout(function () {
+        if (!window.lucide) {
+          document.documentElement.classList.add("offline-config-fallback");
+        }
+      }, 8000);
+    </script>
     <link
         href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
         rel="stylesheet"
+        media="print"
+        onload="this.media='all'"
+        onerror="document.documentElement.classList.add('offline-config-fallback')"
     >
     <style>
     :root {
@@ -402,10 +412,60 @@
       .form-footer > div { width: 100%; }
       .action-button, .clear-button { flex: 1; }
     }
+
+    #offline-config-fallback {
+      display: none;
+      max-width: 32rem;
+      margin: 2rem auto;
+      padding: 1.5rem;
+      color: #edf8fb;
+      font: 16px/1.5 sans-serif;
+    }
+
+    #offline-config-fallback label {
+      display: block;
+      margin: 1rem 0 0.35rem;
+    }
+
+    #offline-config-fallback input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 0.7rem;
+      font: inherit;
+    }
+
+    #offline-config-fallback button {
+      margin-top: 1.2rem;
+      padding: 0.7rem 1rem;
+      font: inherit;
+    }
+
+    #offline-config-fallback-status {
+      white-space: pre-wrap;
+    }
+
+    html.offline-config-fallback .app-shell { display: none; }
+    html.offline-config-fallback #offline-config-fallback { display: block; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.577.0/dist/umd/lucide.min.js" type="text/javascript"></script>
+  <script
+      async
+      src="https://cdn.jsdelivr.net/npm/lucide@0.577.0/dist/umd/lucide.min.js"
+      onerror="document.documentElement.classList.add('offline-config-fallback')"
+  ></script>
  </head>
  <body data-template-id="__page-root">
+  <main id="offline-config-fallback">
+    <h1>Flight Radar Setup</h1>
+    <p>The full configuration page needs an external resource that is unavailable. Use this offline form to update Wi-Fi.</p>
+    <form id="offline-wifi-form">
+      <label for="offline-wifi-ssid">Wi-Fi network name</label>
+      <input id="offline-wifi-ssid" name="ssid" maxlength="32" required>
+      <label for="offline-wifi-password">Wi-Fi password</label>
+      <input id="offline-wifi-password" name="password" type="password" maxlength="63" autocomplete="new-password">
+      <button type="submit">Save and connect</button>
+    </form>
+    <p id="offline-config-fallback-status" role="status" aria-live="polite"></p>
+  </main>
   <div class="app-shell"><img data-template-id="hero-background-image" class="canva-image hero-photo" loading="lazy">
    <main class="content-frame" aria-labelledby="page-title">
     <header class="top-bar">
@@ -598,11 +658,87 @@
     }
 }
 
-
     document.addEventListener("DOMContentLoaded", function () {
-      if (window.lucide) lucide.createIcons();
+  const offlineWifiForm = document.getElementById("offline-wifi-form");
+  const offlineWifiSsid = document.getElementById("offline-wifi-ssid");
+  const offlineWifiPassword = document.getElementById("offline-wifi-password");
+  const offlineStatus = document.getElementById("offline-config-fallback-status");
 
-      loadConfiguration();
+  fetch("/api/config", { cache: "no-store" })
+    .then(function (response) {
+      if (!response.ok) throw new Error("Could not load current settings.");
+      return response.json();
+    })
+    .then(function (settings) {
+      offlineWifiSsid.value = settings.wifiSSID || "";
+    })
+    .catch(function (error) {
+      offlineStatus.textContent = error.message;
+    });
+
+  offlineWifiForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const submitButton = offlineWifiForm.querySelector("button");
+    submitButton.disabled = true;
+    offlineStatus.textContent = "Testing the Wi-Fi credentials…";
+
+    try {
+      const settingsResponse = await fetch("/api/config", {
+        cache: "no-store"
+      });
+      if (!settingsResponse.ok) {
+        throw new Error("Could not load current settings.");
+      }
+      const settings = await settingsResponse.json();
+      settings.wifiSSID = offlineWifiSsid.value;
+      settings.wifiPassword = offlineWifiPassword.value;
+      settings.aeroApiKey = "";
+
+      const saveResponse = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings)
+      });
+      const result = await saveResponse.json();
+      if (!saveResponse.ok) {
+        throw new Error(result.message || "Could not save Wi-Fi settings.");
+      }
+
+      if (result.pending) {
+        for (let attempt = 0; attempt < 50; attempt++) {
+          await new Promise(function (resolve) {
+            window.setTimeout(resolve, 1000);
+          });
+          const statusResponse = await fetch("/api/config/status", {
+            cache: "no-store"
+          });
+          if (!statusResponse.ok) continue;
+          const applied = await statusResponse.json();
+          if (!applied.pending) {
+            if (!applied.success) {
+              throw new Error(applied.message || "Could not connect to Wi-Fi.");
+            }
+            offlineStatus.textContent = applied.message;
+            return;
+          }
+        }
+        throw new Error("Wi-Fi test is still pending. Check the device display.");
+      }
+
+      if (!result.success) {
+        throw new Error(result.message || "Could not save Wi-Fi settings.");
+      }
+      offlineStatus.textContent = result.message || "Settings saved.";
+    } catch (error) {
+      offlineStatus.textContent = error.message;
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+
+  if (window.lucide) lucide.createIcons();
+
+  loadConfiguration();
       const configurationForm = document.getElementById("configuration-form");
       const configurationMessage = document.getElementById("configuration-message");
       const configurationMessageIcon = document.getElementById("configuration-message-icon");
@@ -804,13 +940,18 @@ configurationForm.addEventListener("submit", async function (event) {
 		    body: JSON.stringify(flightData)
 		});
 
+		const result = await response.json().catch(function () {
+		    return null;
+		});
+
 		if (!response.ok) {
-		    throw new Error("Server returned HTTP " + response.status);
+		    throw new Error(
+			(result && result.message) ||
+			("Server returned HTTP " + response.status)
+		    );
 		}
 
-		const result = await response.json();
-
-		if (!result.success) {
+		if (!result || !result.success) {
 		    throw new Error("Server rejected the flight data");
 		}
 
@@ -833,7 +974,9 @@ configurationForm.addEventListener("submit", async function (event) {
 		    flightsMessageIcon,
 		    flightsMessageText,
 		    "error",
-		    "Could not communicate with the server."
+		    error instanceof Error && error.message
+			? error.message
+			: "Could not communicate with the server."
 		);
 	    }
 	});

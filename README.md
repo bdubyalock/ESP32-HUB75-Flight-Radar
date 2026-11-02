@@ -84,6 +84,16 @@ If the display is blank, garbled, or wrong colors, fix wiring/power/pins before 
 
 On boot, the display connects to Wi-Fi, queries the nearest aircraft within your configured radius, and refreshes on a schedule that stays within your daily API budget. Whenever aircraft are in range it shows them; when none are returned it falls back to a radar screensaver with a rotating sweep and "NO TRAFFIC" text. During quiet hours (10 PM–6 AM Eastern by default) the display is dimmed to `QUIET_BRIGHTNESS`, but polling continues so live traffic is still shown if present.
 
+In flight-plan mode, the top row shows the airline logo and flight number,
+with the live aircraft type below. The first lower row alternates every five
+seconds between origin/destination and the aircraft's nearby place name; long
+text scrolls across the row. Place names use the public OpenStreetMap
+Nominatim reverse-geocoding service, queried at most once per minute with
+rounded ADS-B coordinates. The final row cycles between speed/altitude,
+ETA (or ETD while on the ground), and arrival status. Arrival status compares
+estimated and scheduled ETA using a 15-minute early/late threshold, or shows
+Delayed when AeroAPI reports it.
+
 ## Configuration
 
 Compile-time settings and board/display options live in `include/config.h`.
@@ -110,6 +120,12 @@ A changed network name or password is tested for up to 45 seconds before any
 settings are saved. Password and AeroAPI key fields are write-only; leave them
 blank to keep their current values. The configuration page uses plain HTTP
 and has no login, so use it only on a trusted local network.
+
+If the ESP32 cannot join its saved Wi-Fi network, or repeated network
+requests fail, it starts a temporary password-protected setup network. Join
+the `Radar-XXXX` network shown on the display, use the displayed password, and
+open `http://192.168.4.1/config.html`. The setup network shuts down 30 seconds
+after a successful configuration save.
 
 Other settings remain compile-time constants:
 

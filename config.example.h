@@ -58,6 +58,10 @@
 // mDNS hostname (without the .local suffix)
 #define MDNS_HOSTNAME "flightradar"
 
+// Operation mode indicator LEDs
+#define OVERHEAD_MODE_LED_PIN 22
+#define FLIGHT_PLAN_MODE_LED_PIN 21
+
 // AeroAPI configuration
 #define AEROAPI_KEY "your-aeroapi-key"
 #define AEROAPI_URL "https://aeroapi.flightaware.com/aeroapi/"
