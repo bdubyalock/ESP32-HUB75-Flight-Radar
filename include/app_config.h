@@ -15,9 +15,12 @@ struct AppConfig {
 
     // MQTT
     String mqttIP;
-    uint16_t mqttPort = 60883;
+    uint16_t mqttPort = 60473;
+    String mqttWebSocketPath;
     String mqttTopic;
     String mqttDataName;
+    String mqttUsername;
+    String mqttPassword;
 
     // Receiver location
     double latitude = 40.747384;

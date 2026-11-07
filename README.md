@@ -94,12 +94,45 @@ ETA (or ETD while on the ground), and arrival status. Arrival status compares
 estimated and scheduled ETA using a 15-minute early/late threshold, or shows
 Delayed when AeroAPI reports it.
 
+Flight plans can be submitted from the FLIGHT ENTRY portal or received from an
+MQTT broker over WebSockets. The default configuration subscribes to
+`flightradar/your-topic` at `your-mqtt-broker-url-root:60473/mqtt`; configure
+the broker host, port, WebSocket path, topic, username, and password in the
+CONFIGURATION panel. The username is shown as plain text; the password stays
+write-only. Both are stored with the other settings in ESP32 NVS. A
+flight-plan message must use the same `flight_data` and `validity` JSON shape
+as the portal and may contain up to four consecutive flight entries.
+The display confirms changed schedules for five seconds; resubmitting an
+unchanged schedule does not interrupt tracking or show another confirmation.
+The display also shows a completion notice when schedule tracking returns to
+overhead mode.
+When an AeroAPI key is configured, each flight-plan leg is resolved
+independently using its marketed flight identifier, route, and scheduled
+times. The matching AeroAPI result's `ident_icao` supplies the ADS-B callsign,
+so the operating carrier can vary from flight to flight without hardcoded
+carrier mappings. The schedule format and displayed flight number remain
+unchanged. If AeroAPI cannot find one unambiguous result or has no ICAO
+identifier, tracking falls back to the scheduled flight number. If the
+schedule-window query returns no flights, the device retries the identifier
+lookup without date filters and ranks the results using the route and schedule
+times.
+Each poll first checks ADS-B for the scheduled or already-resolved callsign;
+when that flight is present, no AeroAPI request is made. A final leg observed
+on the ground after being airborne, or on the ground at/after its ETA, ends
+schedule mode even if ADS-B subsequently stops reporting it. After landing is
+detected (or the ETA fallback determines the leg is complete), the display
+shows `LANDED` for at least five minutes before advancing to the next leg or
+returning to overhead mode.
+MQTT uses secure WebSockets (`wss://`) with certificate validation against
+the Let's Encrypt ISRG Root X2 CA. The device waits for NTP time before
+connecting so that broker certificate validity can be checked.
+
 ## Configuration
 
 Compile-time settings and board/display options live in `include/config.h`.
 The CONFIGURATION form is served by the ESP32 and stores editable settings in
 NVS flash using Preferences; those values override the `config.h` defaults on
-boot. The FLIGHT ENTRY panel is not connected yet.
+boot. The FLIGHT ENTRY panel submits flight plans directly to the ESP32.
 
 With PlatformIO, build and upload the firmware:
 
@@ -117,9 +150,15 @@ After the ESP32 connects to Wi-Fi, open
 `http://flightradar.local/config.html`) or use the device IP address.
 `MDNS_HOSTNAME` is set in `include/config.h` without the `.local` suffix.
 A changed network name or password is tested for up to 45 seconds before any
-settings are saved. Password and AeroAPI key fields are write-only; leave them
-blank to keep their current values. The configuration page uses plain HTTP
-and has no login, so use it only on a trusted local network.
+settings are saved. Password, AeroAPI key, and MQTT credential fields are
+write-only; leave them blank to keep their current values. The configuration
+page uses plain HTTP and has no login, so use it only on a trusted local
+network.
+
+Previously saved settings in NVS take precedence over `config.h`. If updating
+an existing device, set the MQTT address, port, topic, username, and password
+in the CONFIGURATION panel; use `3852router.thelostvalley.us`,
+`60473`, and `flightradar/brad` for this broker.
 
 If the ESP32 cannot join its saved Wi-Fi network, or repeated network
 requests fail, it starts a temporary password-protected setup network. Join
@@ -132,6 +171,8 @@ Other settings remain compile-time constants:
 | Setting | Description |
 | --- | --- |
 | `WIFI_SSID` / `WIFI_PASSWORD` | Network credentials |
+| `MQTT_IP` / `MQTT_PORT` / `MQTT_WEBSOCKET_PATH` / `MQTT_TOPIC` | MQTT WebSocket broker host, port, path, and subscribed topic |
+| `MQTT_USERNAME` / `MQTT_PASSWORD` | Optional compile-time MQTT credentials; they can also be entered in the configuration page |
 | `RECEIVER_LAT` / `RECEIVER_LON` | Your location in decimal degrees |
 | `SEARCH_RADIUS_KM` | How far to search for aircraft |
 | `PANEL_RES_X` / `PANEL_RES_Y` / `PANEL_CHAIN` | Matrix panel geometry |

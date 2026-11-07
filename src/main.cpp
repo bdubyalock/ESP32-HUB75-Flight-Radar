@@ -6,6 +6,7 @@
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <WebServer.h>
+#include <WebSocketsClient.h>
 #include <esp_system.h>
 #include <time.h>
 #include <math.h>
@@ -13,12 +14,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
+#include <vector>
 
 #include "app_config.h"
 #include "config.h"
+#include "mqtt_ca_cert.h"
 
 enum LayoutSlotKind { LAYOUT_TEXT, LAYOUT_COMPASS };
 enum OperatingMode { MODE_OVERHEAD_FLIGHTS, MODE_FLIGHT_PLAN };
+enum FlightPlanSource { FLIGHT_PLAN_FROM_PORTAL, FLIGHT_PLAN_FROM_MQTT };
+enum DisplayNotice { DISPLAY_NOTICE_NONE, DISPLAY_NOTICE_RECEIVED_MQTT,
+                     DISPLAY_NOTICE_RECEIVED_PORTAL,
+                     DISPLAY_NOTICE_FLIGHTS_COMPLETE };
 
 struct LayoutSlot {
   LayoutSlotKind kind;
@@ -28,6 +35,7 @@ struct LayoutSlot {
 
 MatrixPanel_I2S_DMA *display = nullptr;
 WebServer configServer(80);
+WebSocketsClient mqttWebSocket;
 AppConfig pendingConfig;
 bool configWifiChangePending = false;
 bool configWifiChangeStartPending = false;
@@ -36,6 +44,10 @@ bool configSuccessScreenActive = false;
 bool configSuccessIpScreenActive = false;
 bool mdnsStarted = false;
 bool configAccessPointActive = false;
+bool mqttClientStarted = false;
+bool mqttRestartPending = false;
+bool mqttConnected = false;
+bool mqttSubscribed = false;
 String configApplyMessage;
 unsigned long configWifiChangeStartedMs = 0;
 unsigned long configSuccessScreenStartedMs = 0;
@@ -49,6 +61,16 @@ const unsigned long NTP_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 const uint32_t NTP_INITIAL_WAIT_MS = 1000;
 const uint32_t NTP_RETRY_WAIT_MS = 250;
 const time_t VALID_SYSTEM_TIME_EPOCH = 1577836800;
+const size_t MQTT_MAX_PAYLOAD_SIZE = 4096;
+const unsigned long MQTT_KEEPALIVE_INTERVAL_MS = 30000;
+const uint16_t MQTT_SUBSCRIBE_PACKET_ID = 1;
+const unsigned long DISPLAY_NOTICE_DURATION_MS = 5000;
+unsigned long lastMqttKeepAliveMs = 0;
+unsigned long lastMqttStartAttemptMs = 0;
+DisplayNotice displayNotice = DISPLAY_NOTICE_NONE;
+unsigned long displayNoticeStartedMs = 0;
+unsigned long displayNoticeLastRenderMs = 0;
+bool displayNoticeHasRendered = false;
 
 uint16_t colBlack, colGreen, colYellow, colRed, colWhite;
 uint16_t colCyan, colAmber;
@@ -99,6 +121,7 @@ const unsigned long FETCH_RETRY_ON_FAIL_MS = 10000;
 const unsigned long FLIGHT_PLAN_POLL_INTERVAL_MS = 15000;
 const unsigned long AEROAPI_RETRY_INTERVAL_MS = 300000;
 const unsigned long FLIGHT_PLAN_ETA_GRACE_SECONDS = 1800;
+const unsigned long FLIGHT_PLAN_LANDED_HOLD_MS = 5UL * 60 * 1000;
 const unsigned long FLIGHT_PLAN_ROUTE_RETRY_MS = 300000;
 const unsigned long FLIGHT_PLAN_DISPLAY_PHASE_MS = 5000;
 const unsigned long FLIGHT_PLAN_SCROLL_INTERVAL_MS = 350;
@@ -138,6 +161,9 @@ bool flightPlanLegObservedAirborne = false;
 bool flightPlanHasLiveData = false;
 bool flightPlanAeroApiLanded = false;
 bool flightPlanAdsbLanded = false;
+bool flightPlanLandingHoldActive = false;
+unsigned long flightPlanLandingHoldStartedMs = 0;
+bool flightPlanTrackingCallsignResolved = false;
 bool flightPlanRouteLookupAttempted = false;
 unsigned long flightPlanLastRouteLookupMs = 0;
 uint32_t flightPlanEta = 0;
@@ -146,6 +172,7 @@ uint32_t flightPlanScheduledEta = 0;
 uint32_t flightPlanEstimatedEta = 0;
 String flightPlanOrigin;
 String flightPlanDestination;
+String flightPlanTrackingCallsign;
 String flightPlanLocation = "LOCATION UNKNOWN";
 String flightPlanAeroStatus;
 AircraftSnapshot flightPlanAircraft;
@@ -177,7 +204,11 @@ bool beginTimeSync(uint32_t waitMs);
 void updateTimeSync();
 void handlePostFlightPlan();
 void handleGetFlightPlan();
+void startMqttClient();
+void updateMqttClient();
 void updateOperatingModeFromFlightPlan();
+void drawFlightPlanScrollingRow(int y, const String &text, uint16_t color);
+bool updateDisplayNotice();
 void drawFlightPlanDisplay();
 void updateFlightPlanDisplayAlternation();
 bool fetchFlightPlanLocation(float latitude, float longitude);
@@ -188,6 +219,11 @@ bool advanceFlightPlan();
 bool fetchRoute(const String &callsign);
 
 void setOperatingMode(OperatingMode mode) {
+  if (operatingMode == MODE_FLIGHT_PLAN &&
+      mode == MODE_OVERHEAD_FLIGHTS) {
+    displayNotice = DISPLAY_NOTICE_FLIGHTS_COMPLETE;
+    displayNoticeHasRendered = false;
+  }
   operatingMode = mode;
   digitalWrite(OVERHEAD_MODE_LED_PIN,
                mode == MODE_OVERHEAD_FLIGHTS ? HIGH : LOW);
@@ -201,10 +237,15 @@ void setOperatingMode(OperatingMode mode) {
 void updateOperatingModeFromFlightPlan() {
   OperatingMode desiredMode = MODE_OVERHEAD_FLIGHTS;
   time_t now = time(nullptr);
-  if (flightPlanCount > 0 && !flightPlanCompleted &&
-      now >= VALID_SYSTEM_TIME_EPOCH &&
-      static_cast<uint64_t>(now) >= flightPlanStartValidity &&
-      static_cast<uint64_t>(now) < flightPlanEndValidity) {
+  bool landingHoldActive =
+      flightPlanLandingHoldActive &&
+      millis() - flightPlanLandingHoldStartedMs <
+          FLIGHT_PLAN_LANDED_HOLD_MS;
+  if (landingHoldActive ||
+      (flightPlanCount > 0 && !flightPlanCompleted &&
+       now >= VALID_SYSTEM_TIME_EPOCH &&
+       static_cast<uint64_t>(now) >= flightPlanStartValidity &&
+       static_cast<uint64_t>(now) < flightPlanEndValidity)) {
     desiredMode = MODE_FLIGHT_PLAN;
   }
 
@@ -387,6 +428,73 @@ void showStatus(const char *line1, const char *line2) {
   printClipped(1, 22, line2 + maxChars, colTextPrimary);
 }
 
+void drawDisplayNotice() {
+  display->setBrightness8(activeBrightness());
+  display->fillScreen(colBlack);
+
+  const char *firstLine = "FLIGHTS";
+  const char *secondLine = "";
+  const char *thirdLine = "";
+  const char *fourthLine = "";
+  if (displayNotice == DISPLAY_NOTICE_RECEIVED_MQTT) {
+    secondLine = "RECEIVED";
+    thirdLine = "FOR";
+    fourthLine = config.mqttDataName.c_str();
+  } else if (displayNotice == DISPLAY_NOTICE_RECEIVED_PORTAL) {
+    secondLine = "RECEIVED";
+    thirdLine = "FROM";
+    fourthLine = "PORTAL";
+  } else if (displayNotice == DISPLAY_NOTICE_FLIGHTS_COMPLETE) {
+    secondLine = "COMPLETE.";
+    thirdLine = "SWITCHING";
+    fourthLine = "OVERHEAD";
+  }
+
+  printClippedCentered(0, PANEL_RES_X, 0, firstLine, colTextSecondary);
+  printClippedCentered(0, PANEL_RES_X, 8, secondLine, colTextPrimary);
+  printClippedCentered(0, PANEL_RES_X, 16, thirdLine, colTextSecondary);
+  if (displayNotice == DISPLAY_NOTICE_RECEIVED_MQTT) {
+    drawFlightPlanScrollingRow(24, fourthLine, colTextPrimary);
+  } else {
+    printClippedCentered(0, PANEL_RES_X, 24, fourthLine, colTextPrimary);
+  }
+}
+
+bool updateDisplayNotice() {
+  if (displayNotice == DISPLAY_NOTICE_NONE) {
+    return false;
+  }
+
+  const unsigned long now = millis();
+  if (!displayNoticeHasRendered) {
+    displayNoticeStartedMs = now;
+    displayNoticeLastRenderMs = now;
+    displayNoticeHasRendered = true;
+    drawDisplayNotice();
+    return true;
+  }
+  if (now - displayNoticeStartedMs >= DISPLAY_NOTICE_DURATION_MS) {
+    displayNotice = DISPLAY_NOTICE_NONE;
+    displayNoticeHasRendered = false;
+    if (operatingMode == MODE_FLIGHT_PLAN) {
+      flightPlanDisplayDirty = true;
+    } else if (trackedAircraftCount > 0) {
+      showFlight();
+    } else {
+      screensaverActive = false;
+    }
+    return false;
+  }
+
+  if (displayNotice == DISPLAY_NOTICE_RECEIVED_MQTT &&
+      config.mqttDataName.length() > PANEL_RES_X / TEXT_CHAR_W &&
+      now - displayNoticeLastRenderMs >= FLIGHT_PLAN_SCROLL_INTERVAL_MS) {
+    displayNoticeLastRenderMs = now;
+    drawDisplayNotice();
+  }
+  return true;
+}
+
 void sendJsonResponse(int statusCode, JsonDocument &response) {
   String body;
   serializeJson(response, body);
@@ -403,6 +511,28 @@ bool readConfigString(JsonObjectConst object, const char *key, String &value,
 
   value = field.as<const char *>();
   return value.length() <= maxLength && (allowEmpty || value.length() > 0);
+}
+
+bool hasJsonField(JsonObjectConst object, const char *key) {
+  for (JsonPairConst field : object) {
+    if (strcmp(field.key().c_str(), key) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isValidMqttWebSocketPath(const String &path) {
+  if (!path.startsWith("/")) {
+    return false;
+  }
+  for (size_t index = 0; index < path.length(); index++) {
+    const uint8_t character = static_cast<uint8_t>(path[index]);
+    if (character <= 0x20 || character == 0x7F) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool readConfigNumber(JsonObjectConst object, const char *key, double &value) {
@@ -422,8 +552,11 @@ bool configurationChanged(const AppConfig &left, const AppConfig &right) {
          left.aeroApiKey != right.aeroApiKey ||
          left.aeroApiURL != right.aeroApiURL ||
          left.mqttIP != right.mqttIP || left.mqttPort != right.mqttPort ||
+         left.mqttWebSocketPath != right.mqttWebSocketPath ||
          left.mqttTopic != right.mqttTopic ||
          left.mqttDataName != right.mqttDataName ||
+         left.mqttUsername != right.mqttUsername ||
+         left.mqttPassword != right.mqttPassword ||
          fabs(left.latitude - right.latitude) > numericTolerance ||
          fabs(left.longitude - right.longitude) > numericTolerance ||
          fabs(left.searchRadius - right.searchRadius) > numericTolerance;
@@ -454,6 +587,10 @@ void logConfigurationChanges(const AppConfig &previous,
     Serial.printf("Configuration changed: MQTT port=%u\n",
                   updated.mqttPort);
   }
+  if (previous.mqttWebSocketPath != updated.mqttWebSocketPath) {
+    Serial.printf("Configuration changed: MQTT WebSocket path=%s\n",
+                  updated.mqttWebSocketPath.c_str());
+  }
   if (previous.mqttTopic != updated.mqttTopic) {
     Serial.printf("Configuration changed: MQTT topic=%s\n",
                   updated.mqttTopic.c_str());
@@ -461,6 +598,12 @@ void logConfigurationChanges(const AppConfig &previous,
   if (previous.mqttDataName != updated.mqttDataName) {
     Serial.printf("Configuration changed: MQTT data name=%s\n",
                   updated.mqttDataName.c_str());
+  }
+  if (previous.mqttUsername != updated.mqttUsername) {
+    Serial.println("Configuration changed: MQTT username");
+  }
+  if (previous.mqttPassword != updated.mqttPassword) {
+    Serial.println("Configuration changed: MQTT password");
   }
   if (fabs(previous.latitude - updated.latitude) > numericTolerance) {
     Serial.printf("Configuration changed: latitude=%.6f\n", updated.latitude);
@@ -481,8 +624,11 @@ void handleGetConfiguration() {
   response["aeroApiURL"] = config.aeroApiURL;
   response["mqttIP"] = config.mqttIP;
   response["mqttPort"] = config.mqttPort;
+  response["mqttWebSocketPath"] = config.mqttWebSocketPath;
   response["mqttTopic"] = config.mqttTopic;
   response["mqttDataName"] = config.mqttDataName;
+  response["mqttUsername"] = config.mqttUsername;
+  response["mqttPasswordConfigured"] = !config.mqttPassword.isEmpty();
   response["latitude"] = config.latitude;
   response["longitude"] = config.longitude;
   response["searchRadius"] = config.searchRadius;
@@ -558,27 +704,121 @@ void handleGetFlightPlan() {
   configServer.send(200, "application/json", flightPlanJson);
 }
 
-void handlePostFlightPlan() {
-  JsonDocument request;
-  DeserializationError error = deserializeJson(request, configServer.arg("plain"));
-  if (error || !request.is<JsonObject>()) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Invalid flight plan JSON.";
-    sendJsonResponse(400, response);
-    return;
+bool flightPlansEqual(const String &candidateJson) {
+  if (flightPlanJson.isEmpty()) {
+    JsonDocument candidate;
+    DeserializationError error = deserializeJson(candidate, candidateJson);
+    if (error) {
+      Serial.printf("Stored flight plan comparison failed: %s\n",
+                    error.c_str());
+      return false;
+    }
+    return candidate["flight_data"].as<JsonObjectConst>().size() == 0;
   }
 
+  JsonDocument existing;
+  JsonDocument candidate;
+  DeserializationError existingError =
+      deserializeJson(existing, flightPlanJson);
+  if (existingError) {
+    Serial.printf("Existing flight plan comparison failed: %s\n",
+                  existingError.c_str());
+    return false;
+  }
+  DeserializationError candidateError =
+      deserializeJson(candidate, candidateJson);
+  if (candidateError) {
+    Serial.printf("New flight plan comparison failed: %s\n",
+                  candidateError.c_str());
+    return false;
+  }
+
+  uint32_t existingStart = 0;
+  uint32_t existingEnd = 0;
+  uint32_t candidateStart = 0;
+  uint32_t candidateEnd = 0;
+  if (!readUnixTimestamp(existing["validity"]["start_validity"],
+                         existingStart) ||
+      !readUnixTimestamp(existing["validity"]["end_validity"], existingEnd) ||
+      !readUnixTimestamp(candidate["validity"]["start_validity"],
+                         candidateStart) ||
+      !readUnixTimestamp(candidate["validity"]["end_validity"],
+                         candidateEnd) ||
+      existingStart != candidateStart || existingEnd != candidateEnd) {
+    return false;
+  }
+
+  JsonObjectConst existingFlights =
+      existing["flight_data"].as<JsonObjectConst>();
+  JsonObjectConst candidateFlights =
+      candidate["flight_data"].as<JsonObjectConst>();
+  if (existingFlights.size() != candidateFlights.size()) {
+    return false;
+  }
+
+  for (uint8_t index = 1; index <= 4; index++) {
+    char key[] = {static_cast<char>('0' + index), '\0'};
+    JsonObjectConst existingFlight =
+        existingFlights[key].as<JsonObjectConst>();
+    JsonObjectConst candidateFlight =
+        candidateFlights[key].as<JsonObjectConst>();
+    if (existingFlight.isNull() != candidateFlight.isNull()) {
+      return false;
+    }
+    if (existingFlight.isNull()) {
+      continue;
+    }
+    if (strcmp(existingFlight["destination"] | "",
+               candidateFlight["destination"] | "") != 0 ||
+        strcmp(existingFlight["flight"] | "",
+               candidateFlight["flight"] | "") != 0 ||
+        strcmp(existingFlight["origin"] | "",
+               candidateFlight["origin"] | "") != 0) {
+      return false;
+    }
+
+    bool existingHasEta = false;
+    bool candidateHasEta = false;
+    uint32_t existingEta = 0;
+    uint32_t candidateEta = 0;
+    bool existingHasEtd = false;
+    bool candidateHasEtd = false;
+    uint32_t existingEtd = 0;
+    uint32_t candidateEtd = 0;
+    if (!readOptionalFlightTimestamp(existingFlight["eta"], existingHasEta,
+                                     existingEta) ||
+        !readOptionalFlightTimestamp(candidateFlight["eta"], candidateHasEta,
+                                     candidateEta) ||
+        !readOptionalFlightTimestamp(existingFlight["etd"], existingHasEtd,
+                                     existingEtd) ||
+        !readOptionalFlightTimestamp(candidateFlight["etd"], candidateHasEtd,
+                                     candidateEtd) ||
+        existingHasEta != candidateHasEta ||
+        (existingHasEta && existingEta != candidateEta) ||
+        existingHasEtd != candidateHasEtd ||
+        (existingHasEtd && existingEtd != candidateEtd)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int storeFlightPlan(JsonDocument &request, JsonDocument &response,
+                    FlightPlanSource source) {
+  auto reject = [&response](int statusCode, const char *message) {
+    response["success"] = false;
+    response["message"] = message;
+    return statusCode;
+  };
+  if (!request.is<JsonObject>()) {
+    return reject(400, "Invalid flight plan JSON.");
+  }
   JsonObjectConst fields = request.as<JsonObjectConst>();
   JsonVariantConst flightDataValue = fields["flight_data"];
   JsonVariantConst validityValue = fields["validity"];
   if (!flightDataValue.is<JsonObjectConst>() ||
       !validityValue.is<JsonObjectConst>()) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Flight data and validity fields are required.";
-    sendJsonResponse(400, response);
-    return;
+    return reject(400, "Flight data and validity fields are required.");
   }
 
   JsonObjectConst flightData = flightDataValue.as<JsonObjectConst>();
@@ -588,11 +828,7 @@ void handlePostFlightPlan() {
   if (flightData.size() > 4 ||
       !readUnixTimestamp(validity["start_validity"], startValidity) ||
       !readUnixTimestamp(validity["end_validity"], endValidity)) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Flight plan must have at most four flights and valid timestamps.";
-    sendJsonResponse(400, response);
-    return;
+    return reject(400, "Flight plan must have at most four flights and valid timestamps.");
   }
 
   JsonDocument storedPlan;
@@ -611,11 +847,7 @@ void handlePostFlightPlan() {
     } else if (strcmp(key, "4") == 0) {
       entryIndex = 3;
     } else {
-      JsonDocument response;
-      response["success"] = false;
-      response["message"] = "Flight entries must use keys 1 through 4.";
-      sendJsonResponse(400, response);
-      return;
+      return reject(400, "Flight entries must use keys 1 through 4.");
     }
     flightEntryMask |= static_cast<uint8_t>(1U << entryIndex);
 
@@ -632,28 +864,16 @@ void handlePostFlightPlan() {
         !readConfigString(flight, "flight", flightNumber, 24) ||
         !readConfigString(flight, "origin", origin, 32, true) ||
         !readOptionalFlightTimestamp(flight["etd"], hasEtd, etd)) {
-      JsonDocument response;
-      response["success"] = false;
-      response["message"] = "Each flight entry must include valid flight fields.";
-      sendJsonResponse(400, response);
-      return;
+      return reject(400, "Each flight entry must include valid flight fields.");
     }
 
     flightNumber.trim();
     if (flightNumber.isEmpty() || flightNumber.length() > 24) {
-      JsonDocument response;
-      response["success"] = false;
-      response["message"] = "Flight numbers must contain 1 to 24 characters.";
-      sendJsonResponse(400, response);
-      return;
+      return reject(400, "Flight numbers must contain 1 to 24 characters.");
     }
     for (size_t i = 0; i < flightNumber.length(); i++) {
       if (static_cast<uint8_t>(flightNumber[i]) < 0x20) {
-        JsonDocument response;
-        response["success"] = false;
-        response["message"] = "Flight numbers cannot contain control characters.";
-        sendJsonResponse(400, response);
-        return;
+        return reject(400, "Flight numbers cannot contain control characters.");
       }
     }
 
@@ -675,27 +895,15 @@ void handlePostFlightPlan() {
   }
 
   if (flightEntryMask != static_cast<uint8_t>((1U << storedFlightCount) - 1U)) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Flight entry keys must be consecutive starting at 1.";
-    sendJsonResponse(400, response);
-    return;
+    return reject(400, "Flight entry keys must be consecutive starting at 1.");
   }
 
   if (storedFlightCount > 0 &&
       (startValidity == 0 || endValidity <= startValidity)) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Flight plan validity end must be later than its start.";
-    sendJsonResponse(400, response);
-    return;
+    return reject(400, "Flight plan validity end must be later than its start.");
   }
   if (storedFlightCount == 0 && (startValidity != 0 || endValidity != 0)) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "An empty flight plan must use zero validity timestamps.";
-    sendJsonResponse(400, response);
-    return;
+    return reject(400, "An empty flight plan must use zero validity timestamps.");
   }
 
   JsonObject storedValidity = storedPlan["validity"].to<JsonObject>();
@@ -705,11 +913,15 @@ void handlePostFlightPlan() {
   String serialized;
   serializeJson(storedPlan, serialized);
   if (serialized.isEmpty()) {
-    JsonDocument response;
-    response["success"] = false;
-    response["message"] = "Could not store flight plan in memory.";
-    sendJsonResponse(500, response);
-    return;
+    return reject(500, "Could not store flight plan in memory.");
+  }
+
+  if (flightPlansEqual(serialized)) {
+    Serial.println("Received flight plan is unchanged; keeping current tracking state");
+    response["success"] = true;
+    response["storedIn"] = "RAM";
+    response["flightCount"] = flightPlanCount;
+    return 200;
   }
 
   flightPlanJson = storedFlightCount == 0 ? "" : serialized;
@@ -722,6 +934,8 @@ void handlePostFlightPlan() {
   flightPlanHasLiveData = false;
   flightPlanAeroApiLanded = false;
   flightPlanAdsbLanded = false;
+  flightPlanLandingHoldActive = false;
+  flightPlanLandingHoldStartedMs = 0;
   flightPlanRouteLookupAttempted = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
@@ -730,6 +944,8 @@ void handlePostFlightPlan() {
   flightPlanEstimatedEta = 0;
   flightPlanOrigin = "";
   flightPlanDestination = "";
+  flightPlanTrackingCallsign = "";
+  flightPlanTrackingCallsignResolved = false;
   flightPlanLocation = "LOCATION UNKNOWN";
   flightPlanAeroStatus = "";
   flightPlanLastPollMs = 0;
@@ -749,11 +965,362 @@ void handlePostFlightPlan() {
                   static_cast<unsigned long>(flightPlanEndValidity));
   }
 
-  JsonDocument response;
   response["success"] = true;
   response["storedIn"] = "RAM";
   response["flightCount"] = flightPlanCount;
-  sendJsonResponse(200, response);
+  if (flightPlanCount > 0) {
+    displayNotice = source == FLIGHT_PLAN_FROM_MQTT
+                        ? DISPLAY_NOTICE_RECEIVED_MQTT
+                        : DISPLAY_NOTICE_RECEIVED_PORTAL;
+    displayNoticeHasRendered = false;
+  }
+  return 200;
+}
+
+void handlePostFlightPlan() {
+  JsonDocument request;
+  DeserializationError error = deserializeJson(request, configServer.arg("plain"));
+  if (error) {
+    JsonDocument response;
+    response["success"] = false;
+    response["message"] = "Invalid flight plan JSON.";
+    sendJsonResponse(400, response);
+    return;
+  }
+
+  JsonDocument response;
+  sendJsonResponse(
+      storeFlightPlan(request, response, FLIGHT_PLAN_FROM_PORTAL), response);
+}
+
+bool appendMqttString(std::vector<uint8_t> &packet, const String &value) {
+  if (value.length() > UINT16_MAX) {
+    return false;
+  }
+  packet.push_back(static_cast<uint8_t>(value.length() >> 8));
+  packet.push_back(static_cast<uint8_t>(value.length()));
+  packet.insert(packet.end(), value.c_str(),
+                value.c_str() + value.length());
+  return true;
+}
+
+void appendMqttRemainingLength(std::vector<uint8_t> &packet, size_t length) {
+  do {
+    uint8_t encodedByte = static_cast<uint8_t>(length % 128);
+    length /= 128;
+    if (length > 0) {
+      encodedByte |= 0x80;
+    }
+    packet.push_back(encodedByte);
+  } while (length > 0);
+}
+
+bool sendMqttConnect() {
+  std::vector<uint8_t> body;
+  if (!appendMqttString(body, "MQTT")) {
+    return false;
+  }
+  body.push_back(4);
+  uint8_t connectFlags = 0x02;
+  bool hasUsername = !config.mqttUsername.isEmpty() ||
+                     !config.mqttPassword.isEmpty();
+  if (hasUsername) {
+    connectFlags |= 0x80;
+  }
+  if (!config.mqttPassword.isEmpty()) {
+    connectFlags |= 0x40;
+  }
+  body.push_back(connectFlags);
+  body.push_back(0);
+  body.push_back(60);
+
+  String clientId = "FlightRadar-" + WiFi.macAddress();
+  clientId.replace(":", "");
+  if (!appendMqttString(body, clientId) ||
+      (hasUsername &&
+       !appendMqttString(body, config.mqttUsername)) ||
+      (!config.mqttPassword.isEmpty() &&
+       !appendMqttString(body, config.mqttPassword))) {
+    return false;
+  }
+
+  std::vector<uint8_t> packet;
+  packet.reserve(body.size() + 5);
+  packet.push_back(0x10);
+  appendMqttRemainingLength(packet, body.size());
+  packet.insert(packet.end(), body.begin(), body.end());
+  return mqttWebSocket.sendBIN(packet.data(), packet.size());
+}
+
+bool sendMqttSubscribe() {
+  std::vector<uint8_t> body;
+  body.push_back(static_cast<uint8_t>(MQTT_SUBSCRIBE_PACKET_ID >> 8));
+  body.push_back(static_cast<uint8_t>(MQTT_SUBSCRIBE_PACKET_ID));
+  if (!appendMqttString(body, config.mqttTopic)) {
+    return false;
+  }
+  body.push_back(0);
+
+  std::vector<uint8_t> packet;
+  packet.reserve(body.size() + 5);
+  packet.push_back(0x82);
+  appendMqttRemainingLength(packet, body.size());
+  packet.insert(packet.end(), body.begin(), body.end());
+  return mqttWebSocket.sendBIN(packet.data(), packet.size());
+}
+
+bool sendMqttAcknowledgement(uint8_t packetType, uint16_t packetId) {
+  const uint8_t packet[] = {
+      static_cast<uint8_t>(packetType << 4),
+      2,
+      static_cast<uint8_t>(packetId >> 8),
+      static_cast<uint8_t>(packetId),
+  };
+  return mqttWebSocket.sendBIN(packet, sizeof(packet));
+}
+
+bool decodeMqttRemainingLength(const uint8_t *packet, size_t packetLength,
+                               size_t &offset, size_t &remainingLength) {
+  remainingLength = 0;
+  size_t multiplier = 1;
+  for (uint8_t index = 0; index < 4; index++) {
+    if (offset >= packetLength) {
+      return false;
+    }
+    uint8_t encodedByte = packet[offset++];
+    remainingLength += (encodedByte & 0x7F) * multiplier;
+    if ((encodedByte & 0x80) == 0) {
+      return remainingLength <= packetLength - offset;
+    }
+    multiplier *= 128;
+  }
+  return false;
+}
+
+void processMqttPublish(const uint8_t *packet, size_t packetLength,
+                        size_t offset, size_t remainingLength) {
+  if (remainingLength < 2) {
+    Serial.println("MQTT publish rejected: missing topic");
+    return;
+  }
+  const uint8_t qos = (packet[0] >> 1) & 0x03;
+  if (qos > 1) {
+    Serial.println("MQTT publish rejected: unsupported QoS");
+    return;
+  }
+  uint16_t topicLength =
+      (static_cast<uint16_t>(packet[offset]) << 8) | packet[offset + 1];
+  offset += 2;
+  if (topicLength > remainingLength - 2 ||
+      offset + topicLength > packetLength) {
+    Serial.println("MQTT publish rejected: invalid topic length");
+    return;
+  }
+  String topic;
+  topic.reserve(topicLength);
+  for (uint16_t index = 0; index < topicLength; index++) {
+    topic += static_cast<char>(packet[offset + index]);
+  }
+  offset += topicLength;
+  remainingLength -= 2 + topicLength;
+
+  uint16_t packetId = 0;
+  if (qos == 1) {
+    if (remainingLength < 2) {
+      Serial.println("MQTT publish rejected: missing packet identifier");
+      return;
+    }
+    packetId = (static_cast<uint16_t>(packet[offset]) << 8) |
+               packet[offset + 1];
+    offset += 2;
+    remainingLength -= 2;
+  }
+
+  if (topic == config.mqttTopic) {
+    if (remainingLength > MQTT_MAX_PAYLOAD_SIZE) {
+      Serial.printf("MQTT flight message too large: %u bytes\n",
+                    static_cast<unsigned>(remainingLength));
+    } else {
+      JsonDocument request;
+      DeserializationError error =
+          deserializeJson(request, packet + offset, remainingLength);
+      if (error) {
+        Serial.printf("MQTT flight JSON rejected: %s\n", error.c_str());
+      } else {
+        JsonDocument response;
+        int statusCode =
+            storeFlightPlan(request, response, FLIGHT_PLAN_FROM_MQTT);
+        if (statusCode == 200) {
+          Serial.printf("MQTT flight plan received: %u flight(s)\n",
+                        flightPlanCount);
+        } else {
+          Serial.printf("MQTT flight plan rejected: %s\n",
+                        response["message"] | "invalid payload");
+        }
+      }
+    }
+  }
+
+  if (qos == 1 && !sendMqttAcknowledgement(4, packetId)) {
+    Serial.println("Failed to acknowledge MQTT publish");
+  }
+}
+
+void processMqttPacket(const uint8_t *packet, size_t packetLength) {
+  if (packetLength < 2) {
+    Serial.println("MQTT packet rejected: packet too short");
+    return;
+  }
+  size_t offset = 1;
+  size_t remainingLength = 0;
+  if (!decodeMqttRemainingLength(packet, packetLength, offset,
+                                 remainingLength) ||
+      offset + remainingLength != packetLength) {
+    Serial.println("MQTT packet rejected: invalid packet length");
+    return;
+  }
+
+  switch (packet[0] >> 4) {
+    case 2:
+      if (remainingLength != 2 || packet[offset + 1] != 0) {
+        Serial.printf("MQTT connection refused (code %u)\n",
+                      remainingLength == 2 ? packet[offset + 1] : 0xFF);
+        mqttWebSocket.disconnect();
+        return;
+      }
+      mqttConnected = true;
+      lastMqttKeepAliveMs = millis();
+      Serial.println("MQTT connected");
+      if (!sendMqttSubscribe()) {
+        Serial.println("Failed to send MQTT subscription");
+        mqttWebSocket.disconnect();
+      }
+      break;
+    case 3:
+      if (!mqttConnected) {
+        Serial.println("MQTT publish received before connection");
+        return;
+      }
+      processMqttPublish(packet, packetLength, offset, remainingLength);
+      break;
+    case 9:
+      if (remainingLength >= 3 &&
+          packet[offset] == static_cast<uint8_t>(MQTT_SUBSCRIBE_PACKET_ID >> 8) &&
+          packet[offset + 1] == static_cast<uint8_t>(MQTT_SUBSCRIBE_PACKET_ID) &&
+          packet[offset + 2] != 0x80) {
+        mqttSubscribed = true;
+        Serial.printf("Subscribed to MQTT topic %s\n",
+                      config.mqttTopic.c_str());
+      } else {
+        Serial.println("MQTT subscription failed");
+        mqttWebSocket.disconnect();
+      }
+      break;
+    case 13:
+      lastMqttKeepAliveMs = millis();
+      break;
+    default:
+      break;
+  }
+}
+
+void onMqttWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      mqttConnected = false;
+      mqttSubscribed = false;
+      Serial.println("MQTT WebSocket connected; sending login");
+      if (!sendMqttConnect()) {
+        Serial.println("Failed to send MQTT login");
+        mqttWebSocket.disconnect();
+      }
+      break;
+    case WStype_DISCONNECTED:
+      mqttConnected = false;
+      mqttSubscribed = false;
+      Serial.println("MQTT WebSocket disconnected");
+      break;
+    case WStype_BIN:
+      processMqttPacket(payload, length);
+      break;
+    case WStype_ERROR:
+      Serial.println("MQTT WebSocket error");
+      break;
+    default:
+      break;
+  }
+}
+
+void startMqttClient() {
+  if (WiFi.status() != WL_CONNECTED ||
+      time(nullptr) < VALID_SYSTEM_TIME_EPOCH) {
+    return;
+  }
+  if (lastMqttStartAttemptMs != 0 &&
+      millis() - lastMqttStartAttemptMs < 5000) {
+    return;
+  }
+  lastMqttStartAttemptMs = millis();
+
+  mqttWebSocket.disconnect();
+  mqttConnected = false;
+  mqttSubscribed = false;
+  mqttClientStarted = false;
+  String host = config.mqttIP;
+  host.trim();
+  int schemeEnd = host.indexOf("://");
+  if (schemeEnd >= 0) {
+    host = host.substring(schemeEnd + 3);
+  }
+  int pathStart = host.indexOf('/');
+  if (pathStart >= 0) {
+    host = host.substring(0, pathStart);
+  }
+  if (host.isEmpty()) {
+    Serial.println("MQTT WebSocket host is empty; check configuration");
+    return;
+  }
+
+  mqttWebSocket.onEvent(onMqttWebSocketEvent);
+  mqttWebSocket.setReconnectInterval(5000);
+  mqttWebSocket.enableHeartbeat(15000, 3000, 2);
+  mqttWebSocket.beginSslWithCA(host.c_str(), config.mqttPort,
+                               config.mqttWebSocketPath.c_str(),
+                               MQTT_CA_CERT, "mqtt");
+  mqttClientStarted = true;
+  mqttRestartPending = false;
+  Serial.printf("Connecting to MQTT WebSocket %s:%u%s\n", host.c_str(),
+                config.mqttPort, config.mqttWebSocketPath.c_str());
+}
+
+void updateMqttClient() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (mqttClientStarted) {
+      mqttWebSocket.disconnect();
+      mqttClientStarted = false;
+      mqttConnected = false;
+      mqttSubscribed = false;
+    }
+    return;
+  }
+  if (time(nullptr) < VALID_SYSTEM_TIME_EPOCH) {
+    return;
+  }
+  if (mqttRestartPending || !mqttClientStarted) {
+    startMqttClient();
+  }
+  if (!mqttClientStarted) {
+    return;
+  }
+  mqttWebSocket.loop();
+  if (mqttConnected &&
+      millis() - lastMqttKeepAliveMs >= MQTT_KEEPALIVE_INTERVAL_MS) {
+    const uint8_t pingRequest[] = {0xC0, 0x00};
+    if (!mqttWebSocket.sendBIN(pingRequest, sizeof(pingRequest))) {
+      Serial.println("Failed to send MQTT keepalive");
+    }
+    lastMqttKeepAliveMs = millis();
+  }
 }
 
 void handlePostConfiguration() {
@@ -779,6 +1346,8 @@ void handlePostConfiguration() {
   AppConfig candidate = config;
   String submittedPassword;
   String submittedApiKey;
+  String submittedMqttUsername;
+  String submittedMqttPassword;
   double mqttPort = 0;
 
   bool valid =
@@ -788,17 +1357,31 @@ void handlePostConfiguration() {
       readConfigString(fields, "aeroApiURL", candidate.aeroApiURL, 192) &&
       readConfigString(fields, "mqttIP", candidate.mqttIP, 128) &&
       readConfigNumber(fields, "mqttPort", mqttPort) &&
+      readConfigString(fields, "mqttWebSocketPath",
+                       candidate.mqttWebSocketPath, 128) &&
       readConfigString(fields, "mqttTopic", candidate.mqttTopic, 128) &&
       readConfigString(fields, "mqttDataName", candidate.mqttDataName, 64) &&
       readConfigNumber(fields, "latitude", candidate.latitude) &&
       readConfigNumber(fields, "longitude", candidate.longitude) &&
       readConfigNumber(fields, "searchRadius", candidate.searchRadius);
 
+  if (hasJsonField(fields, "mqttUsername")) {
+    valid = valid &&
+            readConfigString(fields, "mqttUsername", submittedMqttUsername,
+                             128, true);
+  }
+  if (hasJsonField(fields, "mqttPassword")) {
+    valid = valid &&
+            readConfigString(fields, "mqttPassword", submittedMqttPassword,
+                             128, true);
+  }
+
   if (!valid || mqttPort < 1 || mqttPort > 65535 ||
       floor(mqttPort) != mqttPort || candidate.latitude < -90 ||
       candidate.latitude > 90 || candidate.longitude < -180 ||
       candidate.longitude > 180 || candidate.searchRadius < 0.5 ||
       candidate.searchRadius > 100.0 ||
+      !isValidMqttWebSocketPath(candidate.mqttWebSocketPath) ||
       (!candidate.aeroApiURL.startsWith("http://") &&
        !candidate.aeroApiURL.startsWith("https://"))) {
     JsonDocument response;
@@ -814,6 +1397,12 @@ void handlePostConfiguration() {
   }
   if (submittedApiKey.length() > 0) {
     candidate.aeroApiKey = submittedApiKey;
+  }
+  if (submittedMqttUsername.length() > 0) {
+    candidate.mqttUsername = submittedMqttUsername;
+  }
+  if (submittedMqttPassword.length() > 0) {
+    candidate.mqttPassword = submittedMqttPassword;
   }
 
   if (!configurationChanged(config, candidate)) {
@@ -860,6 +1449,14 @@ void handlePostConfiguration() {
     }
 
     logConfigurationChanges(previousConfig, config);
+    if (previousConfig.mqttIP != config.mqttIP ||
+        previousConfig.mqttPort != config.mqttPort ||
+        previousConfig.mqttWebSocketPath != config.mqttWebSocketPath ||
+        previousConfig.mqttTopic != config.mqttTopic ||
+        previousConfig.mqttUsername != config.mqttUsername ||
+        previousConfig.mqttPassword != config.mqttPassword) {
+      mqttRestartPending = true;
+    }
     lastFetchMs = 0;
     if (configAccessPointActive) {
       configAccessPointShutdownAtMs =
@@ -931,6 +1528,14 @@ void updateConfigWifiChange() {
     }
 
     logConfigurationChanges(previousConfig, config);
+    if (previousConfig.mqttIP != config.mqttIP ||
+        previousConfig.mqttPort != config.mqttPort ||
+        previousConfig.mqttWebSocketPath != config.mqttWebSocketPath ||
+        previousConfig.mqttTopic != config.mqttTopic ||
+        previousConfig.mqttUsername != config.mqttUsername ||
+        previousConfig.mqttPassword != config.mqttPassword) {
+      mqttRestartPending = true;
+    }
     configWifiChangePending = false;
     configApplySucceeded = true;
     configApplyMessage = "Wi-Fi connected and configuration saved.";
@@ -2489,6 +3094,14 @@ void drawFlightPlanPositionRow(int phase) {
 
 void drawFlightPlanStatsRow(int phase) {
   display->fillRect(0, FLIGHT_ROW_STATS, PANEL_RES_X, TEXT_CHAR_H, colBlack);
+  if (flightPlanLandingHoldActive &&
+      millis() - flightPlanLandingHoldStartedMs <
+          FLIGHT_PLAN_LANDED_HOLD_MS) {
+    printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS, "LANDED",
+                         colStats);
+    return;
+  }
+
   if (phase == 0) {
     if (!flightPlanHasLiveData) {
       printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS,
@@ -2744,49 +3357,164 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
     return false;
   }
 
-  String url = config.aeroApiURL;
-  if (!url.endsWith("/")) {
-    url += "/";
-  }
-  url += "flights/";
-  url += encodeUrlPathSegment(flightNumber);
-  url += "?start=";
-  url += startTime;
-  url += "&end=";
-  url += endTime;
-
-  HTTPClient http;
-  http.setTimeout(10000);
-  if (!http.begin(url)) {
-    Serial.println("AeroAPI request could not be initialized");
-    return false;
-  }
-  http.addHeader("x-apikey", config.aeroApiKey);
-  int statusCode = http.GET();
-  if (statusCode != HTTP_CODE_OK) {
-    Serial.printf("AeroAPI flight lookup failed: HTTP %d\n", statusCode);
-    http.end();
-    return false;
-  }
-
-  String payload = http.getString();
-  http.end();
   JsonDocument response;
-  DeserializationError error = deserializeJson(response, payload);
-  payload = "";
-  if (error) {
-    Serial.printf("AeroAPI flight response parse failed: %s\n", error.c_str());
+  auto fetchFlights = [&](bool includeScheduleWindow) {
+    String url = config.aeroApiURL;
+    if (!url.endsWith("/")) {
+      url += "/";
+    }
+    url += "flights/";
+    url += encodeUrlPathSegment(flightNumber);
+    if (includeScheduleWindow) {
+      url += "?start=";
+      url += startTime;
+      url += "&end=";
+      url += endTime;
+    }
+
+    HTTPClient http;
+    http.setTimeout(10000);
+    if (!http.begin(url)) {
+      Serial.println("AeroAPI request could not be initialized");
+      return false;
+    }
+    http.addHeader("x-apikey", config.aeroApiKey);
+    int statusCode = http.GET();
+    if (statusCode != HTTP_CODE_OK) {
+      Serial.printf("AeroAPI flight lookup failed: HTTP %d\n", statusCode);
+      http.end();
+      return false;
+    }
+
+    String payload = http.getString();
+    http.end();
+    DeserializationError error = deserializeJson(response, payload);
+    payload = "";
+    if (error) {
+      Serial.printf("AeroAPI flight response parse failed: %s\n",
+                    error.c_str());
+      return false;
+    }
+    return true;
+  };
+
+  if (!fetchFlights(true)) {
     return false;
   }
-
   JsonArray flights = response["flights"].as<JsonArray>();
+  if (flights.isNull() || flights.size() == 0) {
+    Serial.printf(
+        "AeroAPI returned no flights for %s in the schedule window; retrying without date filters\n",
+        flightNumber.c_str());
+    if (!fetchFlights(false)) {
+      return false;
+    }
+    flights = response["flights"].as<JsonArray>();
+  }
   if (flights.isNull() || flights.size() == 0) {
     Serial.printf("AeroAPI found no itinerary data for %s\n",
                   flightNumber.c_str());
     return true;
   }
 
-  JsonObjectConst flight = flights[0].as<JsonObjectConst>();
+  JsonObjectConst flight;
+  uint64_t bestMatchScore = UINT64_MAX;
+  bool bestMatchIsAmbiguous = false;
+  const bool hasExpectedOrigin = !flightPlanOrigin.isEmpty();
+  const bool hasExpectedDestination = !flightPlanDestination.isEmpty();
+  const bool hasExpectedEtd = flightPlanEtd > 0;
+  const bool hasExpectedEta = flightPlanEta > 0;
+  const uint64_t MISSING_ROUTE_FIELD_PENALTY = 1ULL << 40;
+  const uint64_t ROUTE_MISMATCH_PENALTY = 1ULL << 48;
+  for (JsonObjectConst candidate : flights) {
+    String candidateOrigin = candidate["origin"]["code_iata"] | "";
+    if (candidateOrigin.isEmpty()) {
+      candidateOrigin = candidate["origin"]["code"] | "";
+    }
+    String candidateDestination =
+        candidate["destination"]["code_iata"] | "";
+    if (candidateDestination.isEmpty()) {
+      candidateDestination = candidate["destination"]["code"] | "";
+    }
+
+    uint64_t missingRouteFields = 0;
+    uint64_t routeMismatches = 0;
+    if (hasExpectedOrigin && candidateOrigin.isEmpty()) {
+      missingRouteFields++;
+    } else if (hasExpectedOrigin &&
+               !candidateOrigin.equalsIgnoreCase(flightPlanOrigin)) {
+      routeMismatches++;
+    }
+    if (hasExpectedDestination && candidateDestination.isEmpty()) {
+      missingRouteFields++;
+    } else if (hasExpectedDestination &&
+               !candidateDestination.equalsIgnoreCase(flightPlanDestination)) {
+      routeMismatches++;
+    }
+    uint64_t matchScore =
+        missingRouteFields * MISSING_ROUTE_FIELD_PENALTY +
+        routeMismatches * ROUTE_MISMATCH_PENALTY;
+
+    uint32_t candidateTime = 0;
+    if (hasExpectedEtd &&
+        (readAeroApiTimestamp(candidate["scheduled_out"], candidateTime) ||
+         readAeroApiTimestamp(candidate["estimated_out"], candidateTime))) {
+      uint32_t difference = candidateTime > flightPlanEtd
+                                ? candidateTime - flightPlanEtd
+                                : flightPlanEtd - candidateTime;
+      matchScore += difference;
+    } else if (hasExpectedEtd) {
+      matchScore += 12ULL * 60 * 60;
+    }
+    candidateTime = 0;
+    if (hasExpectedEta &&
+        (readAeroApiTimestamp(candidate["scheduled_in"], candidateTime) ||
+         readAeroApiTimestamp(candidate["estimated_in"], candidateTime))) {
+      uint32_t difference = candidateTime > flightPlanEta
+                                ? candidateTime - flightPlanEta
+                                : flightPlanEta - candidateTime;
+      matchScore += difference;
+    } else if (hasExpectedEta) {
+      matchScore += 12ULL * 60 * 60;
+    }
+
+    if (flight.isNull() || matchScore < bestMatchScore) {
+      flight = candidate;
+      bestMatchScore = matchScore;
+      bestMatchIsAmbiguous = false;
+    } else if (matchScore == bestMatchScore) {
+      bestMatchIsAmbiguous = true;
+    }
+  }
+  if (flight.isNull() || bestMatchIsAmbiguous) {
+    Serial.printf("AeroAPI flight match for %s was %s\n",
+                  flightNumber.c_str(),
+                  flight.isNull() ? "not found" : "ambiguous");
+    return true;
+  }
+
+  String trackingCallsign = flight["ident_icao"] | "";
+  trackingCallsign.trim();
+  bool validTrackingCallsign =
+      !trackingCallsign.isEmpty() && trackingCallsign.length() <= 24;
+  for (size_t index = 0;
+       validTrackingCallsign && index < trackingCallsign.length(); index++) {
+    char character = trackingCallsign[index];
+    validTrackingCallsign =
+        (character >= 'A' && character <= 'Z') ||
+        (character >= 'a' && character <= 'z') ||
+        (character >= '0' && character <= '9');
+  }
+  if (validTrackingCallsign) {
+    flightPlanTrackingCallsign = trackingCallsign;
+    flightPlanTrackingCallsignResolved = true;
+    Serial.printf("AeroAPI tracking callsign for %s: %s\n",
+                  flightNumber.c_str(), trackingCallsign.c_str());
+  } else {
+    Serial.printf("AeroAPI has no valid ICAO callsign for %s\n",
+                  flightNumber.c_str());
+  }
+
   String origin = flight["origin"]["code_iata"] | "";
   if (origin.isEmpty()) {
     origin = flight["origin"]["code"] | "";
@@ -2912,6 +3640,7 @@ bool fetchFlightPlanLocation(float latitude, float longitude) {
 }
 
 bool fetchFlightPlanAircraft(const String &flightNumber) {
+  flightPlanHasLiveData = false;
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
@@ -2978,8 +3707,9 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
     if (!snapshot.onGround) {
       flightPlanLegObservedAirborne = true;
       flightPlanAdsbLanded = false;
-    } else if (flightPlanLegObservedAirborne &&
-               flightPlanDestination.equalsIgnoreCase(routeDest)) {
+    } else if (flightPlanLegObservedAirborne ||
+               (flightPlanEta > 0 &&
+                time(nullptr) >= static_cast<time_t>(flightPlanEta))) {
       flightPlanAdsbLanded = true;
     }
     flightPlanDisplayDirty = true;
@@ -2990,7 +3720,6 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
     return true;
   }
 
-  flightPlanHasLiveData = false;
   flightPlanDisplayDirty = true;
   Serial.printf("ADSB.lol has no live aircraft for %s\n",
                 flightNumber.c_str());
@@ -3002,6 +3731,9 @@ void resetCurrentFlightPlanLeg() {
   flightPlanHasLiveData = false;
   flightPlanAeroApiLanded = false;
   flightPlanAdsbLanded = false;
+  flightPlanLandingHoldActive = false;
+  flightPlanLandingHoldStartedMs = 0;
+  flightPlanTrackingCallsignResolved = false;
   flightPlanRouteLookupAttempted = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
@@ -3010,6 +3742,7 @@ void resetCurrentFlightPlanLeg() {
   flightPlanEstimatedEta = 0;
   flightPlanOrigin = "";
   flightPlanDestination = "";
+  flightPlanTrackingCallsign = "";
   flightPlanLocation = "LOCATION UNKNOWN";
   flightPlanAeroStatus = "";
   flightPlanLastPollMs = 0;
@@ -3036,8 +3769,29 @@ bool advanceFlightPlan() {
   return true;
 }
 
+void beginFlightPlanLandingHold(const String &flightNumber) {
+  if (flightPlanLandingHoldActive) {
+    return;
+  }
+  flightPlanLandingHoldActive = true;
+  flightPlanLandingHoldStartedMs = millis();
+  flightPlanDisplayDirty = true;
+  Serial.printf("Flight %s landed; holding display for at least five minutes\n",
+                flightNumber.c_str());
+}
+
 void pollFlightPlan() {
   if (flightPlanCompleted || flightPlanCurrentIndex >= flightPlanCount) {
+    return;
+  }
+
+  if (flightPlanLandingHoldActive) {
+    if (millis() - flightPlanLandingHoldStartedMs <
+        FLIGHT_PLAN_LANDED_HOLD_MS) {
+      return;
+    }
+    flightPlanLandingHoldActive = false;
+    advanceFlightPlan();
     return;
   }
 
@@ -3069,8 +3823,23 @@ void pollFlightPlan() {
     flightPlanDestination = flight["destination"] | "";
   }
 
-  fetchFlightPlanAircraft(flightNumber);
+  String trackingCallsign =
+      flightPlanTrackingCallsign.isEmpty() ? flightNumber
+                                           : flightPlanTrackingCallsign;
+  fetchFlightPlanAircraft(trackingCallsign);
   flightPlanLastPollMs = millis();
+
+  if (flightPlanHasLiveData && !flightPlanTrackingCallsignResolved) {
+    flightPlanTrackingCallsign = trackingCallsign;
+    flightPlanTrackingCallsignResolved = true;
+    Serial.printf("Using active ADS-B callsign %s; skipping AeroAPI lookup\n",
+                  trackingCallsign.c_str());
+  }
+
+  if (flightPlanAeroApiLanded || flightPlanAdsbLanded) {
+    beginFlightPlanLandingHold(flightNumber);
+    return;
+  }
 
   bool routeMissing = flightPlanOrigin.isEmpty() ||
                       flightPlanDestination.isEmpty();
@@ -3078,17 +3847,24 @@ void pollFlightPlan() {
       routeMissing &&
       (flightPlanRouteLookupAttempted || !flightPlanHasLiveData);
   bool etaMissing = flightPlanEta == 0;
-  bool aeroApiDataNeeded = routeLookupCouldNotProvideRoute || etaMissing;
+  bool aeroApiDataNeeded = !flightPlanTrackingCallsignResolved ||
+                           routeLookupCouldNotProvideRoute || etaMissing;
   unsigned long nowMs = millis();
-  if (!config.aeroApiKey.isEmpty() && aeroApiDataNeeded &&
+  if (!flightPlanHasLiveData && !config.aeroApiKey.isEmpty() &&
+      aeroApiDataNeeded &&
       (aeroApiLastPollMs == 0 ||
        nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
-    Serial.printf("AeroAPI lookup needed for %s: %s%s\n",
+    Serial.printf("AeroAPI lookup needed for %s%s%s%s\n",
                   flightNumber.c_str(),
-                  etaMissing ? "ETA missing" : "",
+                  flightPlanTrackingCallsignResolved ? "" : ": tracking callsign",
+                  etaMissing ? (flightPlanTrackingCallsignResolved
+                                    ? ": ETA missing"
+                                    : ", ETA missing")
+                             : "",
                   routeLookupCouldNotProvideRoute
-                      ? (etaMissing ? ", route lookup incomplete"
-                                    : "route lookup incomplete")
+                      ? ((etaMissing || !flightPlanTrackingCallsignResolved)
+                             ? ", route lookup incomplete"
+                             : ": route lookup incomplete")
                       : "");
     fetchAeroApiFlightDetails(flightNumber);
     aeroApiLastPollMs = millis();
@@ -3100,13 +3876,7 @@ void pollFlightPlan() {
                                 FLIGHT_PLAN_ETA_GRACE_SECONDS &&
                      (!flightPlanHasLiveData || flightPlanAircraft.onGround);
   if (flightPlanAeroApiLanded || flightPlanAdsbLanded || etaFallback) {
-    if (etaFallback && !flightPlanAeroApiLanded && !flightPlanAdsbLanded) {
-      Serial.printf("Flight %s advanced after ETA fallback\n",
-                    flightNumber.c_str());
-    } else {
-      Serial.printf("Flight %s reported landed\n", flightNumber.c_str());
-    }
-    advanceFlightPlan();
+    beginFlightPlanLandingHold(flightNumber);
   }
 }
 
@@ -3496,6 +4266,7 @@ void setup() {
   startFlightMdns();
   setupConfigServer();
   beginTimeSync(NTP_INITIAL_WAIT_MS);
+  startMqttClient();
 
   // Initial fetch + render; loop() then keeps polling on schedule. Planes are
   // shown whenever present (dimmed during quiet hours); otherwise the
@@ -3580,6 +4351,8 @@ void loop() {
     return;
   }
 
+  updateMqttClient();
+
   static OperatingMode lastDisplayMode = MODE_OVERHEAD_FLIGHTS;
   if (operatingMode != lastDisplayMode) {
     if (operatingMode == MODE_FLIGHT_PLAN) {
@@ -3594,6 +4367,11 @@ void loop() {
       screensaverActive = false;
     }
     lastDisplayMode = operatingMode;
+  }
+
+  if (updateDisplayNotice()) {
+    delay(40);
+    return;
   }
 
   if (operatingMode == MODE_FLIGHT_PLAN) {

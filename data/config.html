@@ -508,15 +508,27 @@
          </div>
         </div>
         <div class="field-group"><label for="mqtt-ip">MQTT Address</label>
-         <div class="input-wrap"><i data-lucide="server"></i> <input placeholder="e.g.: https://myserver.com" id="mqtt-ip" name="mqtt-ip" type="text" inputmode="decimal" autocomplete="off">
+         <div class="input-wrap"><i data-lucide="server"></i> <input placeholder="e.g.: mqtt.example.com" id="mqtt-ip" name="mqtt-ip" type="text" autocomplete="off">
          </div>
         </div>
         <div class="field-group"><label for="mqtt-port">MQTT Port</label>
-         <div class="input-wrap"><i data-lucide="waypoints"></i> <input placeholder="e.g.:8883" id="mqtt-port" name="mqtt-port" type="number" min="1" max="65535">
+         <div class="input-wrap"><i data-lucide="waypoints"></i> <input placeholder="e.g.:60473" id="mqtt-port" name="mqtt-port" type="number" min="1" max="65535">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-websocket-path">MQTT WebSocket Path</label>
+         <div class="input-wrap"><i data-lucide="route"></i> <input placeholder="e.g.: /mqtt" id="mqtt-websocket-path" name="mqtt-websocket-path" type="text" autocomplete="off">
          </div>
         </div>
         <div class="field-group"><label for="mqtt-topic">MQTT Topic</label>
          <div class="input-wrap"><i data-lucide="route"></i> <input placeholder="e.g.: flightwall/mywall" id="mqtt-topic" name="mqtt-topic" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-username">MQTT Username</label>
+         <div class="input-wrap"><i data-lucide="user-round"></i> <input placeholder="Required by MQTT server" id="mqtt-username" name="mqtt-username" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-password">MQTT Password</label>
+         <div class="input-wrap"><i data-lucide="key-round"></i> <input placeholder="Required by MQTT server" id="mqtt-password" name="mqtt-password" type="password" autocomplete="new-password">
          </div>
         </div>
         <div class="field-group"><label for="mqtt-data-name">MQTT Data Name</label>
@@ -638,11 +650,22 @@
         document.getElementById("mqtt-port").value =
             config.mqttPort || "";
 
+        document.getElementById("mqtt-websocket-path").value =
+            config.mqttWebSocketPath || "";
+
         document.getElementById("mqtt-topic").value =
             config.mqttTopic || "";
 
         document.getElementById("mqtt-data-name").value =
             config.mqttDataName || "";
+
+        document.getElementById("mqtt-username").value =
+            config.mqttUsername || "";
+
+        document.getElementById("mqtt-password").placeholder =
+            config.mqttPasswordConfigured
+                ? "Leave blank to keep current"
+                : "Required by MQTT server";
 
         document.getElementById("latitude").value =
             config.latitude ?? "";
@@ -760,8 +783,11 @@ configurationForm.addEventListener("submit", async function (event) {
         aeroApiURL: document.getElementById("aeroapi-url").value,
         mqttIP: document.getElementById("mqtt-ip").value,
         mqttPort: Number(document.getElementById("mqtt-port").value),
+        mqttWebSocketPath: document.getElementById("mqtt-websocket-path").value,
         mqttTopic: document.getElementById("mqtt-topic").value,
         mqttDataName: document.getElementById("mqtt-data-name").value,
+        mqttUsername: document.getElementById("mqtt-username").value,
+        mqttPassword: document.getElementById("mqtt-password").value,
         latitude: Number(document.getElementById("latitude").value),
         longitude: Number(document.getElementById("longitude").value),
         searchRadius: Number(document.getElementById("search-radius").value)
@@ -820,6 +846,7 @@ configurationForm.addEventListener("submit", async function (event) {
         await loadConfiguration();
         document.getElementById("wifi-password").value = "";
         document.getElementById("aeroapi-key").value = "";
+        document.getElementById("mqtt-password").value = "";
         showMessage(
             configurationMessage,
             configurationMessageIcon,

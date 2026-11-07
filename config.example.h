@@ -67,7 +67,10 @@
 #define AEROAPI_URL "https://aeroapi.flightaware.com/aeroapi/"
 
 // MQTT configuration
-#define MQTT_IP "your-mqtt-server"
-#define MQTT_PORT 1883
-#define MQTT_TOPIC "flightradar"
+#define MQTT_IP "your-mqtt-broker-url-root"
+#define MQTT_PORT 60473
+#define MQTT_WEBSOCKET_PATH "/mqtt"
+#define MQTT_TOPIC "flightradar/your-topic"
 #define MQTT_DATA_NAME "Flight Radar"
+#define MQTT_USERNAME "your-username"
+#define MQTT_PASSWORD "your-password"

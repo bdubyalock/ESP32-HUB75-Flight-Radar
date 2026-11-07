@@ -5,6 +5,18 @@
 
 #include "config.h"
 
+#ifndef MQTT_USERNAME
+#define MQTT_USERNAME ""
+#endif
+
+#ifndef MQTT_PASSWORD
+#define MQTT_PASSWORD ""
+#endif
+
+#ifndef MQTT_WEBSOCKET_PATH
+#define MQTT_WEBSOCKET_PATH "/mqtt"
+#endif
+
 AppConfig config;
 
 namespace {
@@ -18,8 +30,11 @@ void loadConfiguration() {
   config.aeroApiURL = AEROAPI_URL;
   config.mqttIP = MQTT_IP;
   config.mqttPort = MQTT_PORT;
+  config.mqttWebSocketPath = MQTT_WEBSOCKET_PATH;
   config.mqttTopic = MQTT_TOPIC;
   config.mqttDataName = MQTT_DATA_NAME;
+  config.mqttUsername = MQTT_USERNAME;
+  config.mqttPassword = MQTT_PASSWORD;
   config.latitude = RECEIVER_LAT;
   config.longitude = RECEIVER_LON;
   config.searchRadius = TRACK_RADIUS_KM / 1.852;
@@ -64,11 +79,21 @@ void loadConfiguration() {
   if (fields["mqttPort"].is<int>()) {
     config.mqttPort = fields["mqttPort"].as<uint16_t>();
   }
+  if (fields["mqttWebSocketPath"].is<const char *>()) {
+    config.mqttWebSocketPath =
+        fields["mqttWebSocketPath"].as<const char *>();
+  }
   if (fields["mqttTopic"].is<const char *>()) {
     config.mqttTopic = fields["mqttTopic"].as<const char *>();
   }
   if (fields["mqttDataName"].is<const char *>()) {
     config.mqttDataName = fields["mqttDataName"].as<const char *>();
+  }
+  if (fields["mqttUsername"].is<const char *>()) {
+    config.mqttUsername = fields["mqttUsername"].as<const char *>();
+  }
+  if (fields["mqttPassword"].is<const char *>()) {
+    config.mqttPassword = fields["mqttPassword"].as<const char *>();
   }
   if (fields["latitude"].is<double>() || fields["latitude"].is<int>()) {
     config.latitude = fields["latitude"].as<double>();
@@ -96,8 +121,11 @@ bool saveConfiguration() {
   document["aeroApiURL"] = config.aeroApiURL;
   document["mqttIP"] = config.mqttIP;
   document["mqttPort"] = config.mqttPort;
+  document["mqttWebSocketPath"] = config.mqttWebSocketPath;
   document["mqttTopic"] = config.mqttTopic;
   document["mqttDataName"] = config.mqttDataName;
+  document["mqttUsername"] = config.mqttUsername;
+  document["mqttPassword"] = config.mqttPassword;
   document["latitude"] = config.latitude;
   document["longitude"] = config.longitude;
   document["searchRadius"] = config.searchRadius;
