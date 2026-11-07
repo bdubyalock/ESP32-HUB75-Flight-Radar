@@ -1,0 +1,1070 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flight Tracker Config Panel</title>
+
+    <script>
+      window.setTimeout(function () {
+        if (!window.lucide) {
+          document.documentElement.classList.add("offline-config-fallback");
+        }
+      }, 8000);
+    </script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+        rel="stylesheet"
+        media="print"
+        onload="this.media='all'"
+        onerror="document.documentElement.classList.add('offline-config-fallback')"
+    >
+    <style>
+    :root {
+      --ink: #07131d;
+      --panel: rgba(7, 24, 35, 0.88);
+      --panel-deep: rgba(3, 15, 24, 0.94);
+      --line: rgba(151, 216, 232, 0.2);
+      --cyan: #7fe7f4;
+      --amber: #ffbd59;
+      --muted: #9ab2bd;
+      --danger: #ff8c7a;
+      --success: #9fe1b4;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      font-family: "DM Sans", sans-serif;
+      color: #edf8fb;
+      background: #07131d;
+    }
+
+    .app-shell {
+      position: relative;
+      width: 100%;
+      min-height: calc(100 * min(var(--vh, 1vh), 1vh));
+      overflow: hidden;
+      isolation: isolate;
+      padding: 2rem;
+    }
+
+    .app-shell::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      background:
+        linear-gradient(115deg, rgba(1, 10, 17, 0.94) 0%, rgba(3, 19, 29, 0.76) 48%, rgba(2, 11, 19, 0.92) 100%);
+    }
+
+    .app-shell::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0.38;
+      background-image:
+        linear-gradient(rgba(127, 231, 244, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(127, 231, 244, 0.045) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: linear-gradient(to bottom, black, transparent 84%);
+    }
+
+    .hero-photo {
+      position: absolute;
+      inset: 0;
+      z-index: -3;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.36;
+    }
+
+    .content-frame {
+      width: 100%;
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1.5rem;
+      padding-bottom: 1.6rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--line);
+      animation: enter 0.65s ease both;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-family: "Space Mono", monospace;
+      color: var(--cyan);
+      font-size: 0.73rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow i { width: 16px; height: 16px; }
+
+    .title {
+      margin: 0.5rem 0 0.25rem;
+      letter-spacing: -0.045em;
+      line-height: 1;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 600px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .status-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex: none;
+      padding: 0.6rem 0.8rem;
+      border: 1px solid rgba(159, 225, 180, 0.4);
+      border-radius: 999px;
+      font-family: "Space Mono", monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      box-shadow: 0 0 24px rgba(116, 231, 180, 0.08);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #9fe1b4;
+      box-shadow: 0 0 10px #9fe1b4;
+    }
+
+    .panel-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+      gap: 1.25rem;
+    }
+
+    .control-panel {
+      border: 1px solid var(--line);
+      border-radius: 1.25rem;
+      background: linear-gradient(145deg, rgba(10, 31, 43, 0.94), rgba(3, 15, 24, 0.91));
+      box-shadow: 0 24px 55px rgba(0, 0, 0, 0.28);
+      overflow: hidden;
+      animation: enter 0.7s ease both;
+    }
+
+    .flight-panel { animation-delay: 0.1s; }
+
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      gap: 0.9rem;
+      padding: 1.25rem 1.35rem;
+      border-bottom: 1px solid var(--line);
+      background: rgba(0, 0, 0, 0.16);
+    }
+
+    .panel-icon {
+      display: grid;
+      place-items: center;
+      width: 2.2rem;
+      height: 2.2rem;
+      border: 1px solid rgba(127, 231, 244, 0.35);
+      border-radius: 0.7rem;
+      color: var(--cyan);
+      background: rgba(127, 231, 244, 0.08);
+    }
+
+    .panel-icon i { width: 18px; height: 18px; }
+
+    .panel-heading h2 {
+      margin: 0;
+      font-family: "Space Mono", monospace;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .panel-heading p {
+      margin: 0.18rem 0 0;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .panel-body { padding: 1.35rem; }
+
+    .fields-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .field-group { min-width: 0; }
+
+    .full-span { grid-column: 1 / -1; }
+
+    label {
+      display: block;
+      margin-bottom: 0.48rem;
+      color: #cfe3e8;
+      font-family: "Space Mono", monospace;
+      font-size: 0.71rem;
+      font-weight: 700;
+      letter-spacing: 0.055em;
+      text-transform: uppercase;
+    }
+
+    .input-wrap { position: relative; }
+
+    .input-wrap i {
+      position: absolute;
+      top: 50%;
+      left: 0.85rem;
+      width: 16px;
+      height: 16px;
+      color: #6993a0;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid rgba(154, 178, 189, 0.27);
+      border-radius: 0.65rem;
+      outline: none;
+      padding: 0.78rem 0.8rem 0.78rem 2.6rem;
+      background: rgba(1, 12, 20, 0.62);
+      color: #f4fcff;
+      font-family: "DM Sans", sans-serif;
+      font-size: 0.94rem;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }
+
+    input[type="datetime-local"] {
+      padding-left: 0.8rem;
+      color-scheme: dark;
+    }
+
+    input::placeholder { color: #66818b; }
+
+    input:hover { border-color: rgba(127, 231, 244, 0.48); }
+
+    input:focus {
+      border-color: var(--cyan);
+      background: rgba(1, 16, 25, 0.9);
+      box-shadow: 0 0 0 3px rgba(127, 231, 244, 0.14);
+    }
+
+    .form-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.85rem;
+      flex-wrap: wrap;
+      margin-top: 1.3rem;
+    }
+
+    .helper-copy {
+      margin: 0;
+      color: #7897a1;
+      font-size: 0.77rem;
+      line-height: 1.45;
+    }
+
+    .action-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.55rem;
+      min-height: 2.85rem;
+      border: 1px solid transparent;
+      border-radius: 0.7rem;
+      padding: 0.7rem 1rem;
+      cursor: pointer;
+      font-family: "Space Mono", monospace;
+      font-size: 0.73rem;
+      font-weight: 700;
+      letter-spacing: 0.035em;
+      text-transform: uppercase;
+      transition: transform 160ms ease, filter 160ms ease, box-shadow 160ms ease;
+    }
+
+    .action-button i { width: 16px; height: 16px; }
+    .action-button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .action-button:focus-visible, .clear-button:focus-visible {
+      outline: 3px solid rgba(127, 231, 244, 0.5);
+      outline-offset: 3px;
+    }
+    .action-button:active { transform: translateY(0); }
+
+    .clear-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.48rem;
+      min-height: 2.85rem;
+      border: 1px solid rgba(154, 178, 189, 0.34);
+      border-radius: 0.7rem;
+      padding: 0.7rem 0.9rem;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.035);
+      color: #c6d8dd;
+      font-family: "Space Mono", monospace;
+      font-size: 0.73rem;
+      font-weight: 700;
+      letter-spacing: 0.035em;
+      text-transform: uppercase;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .clear-button:hover {
+      border-color: rgba(255, 189, 89, 0.62);
+      background: rgba(255, 189, 89, 0.1);
+    }
+
+    .clear-button i { width: 16px; height: 16px; }
+
+    .message {
+      display: none;
+      margin-top: 1rem;
+      border-radius: 0.65rem;
+      padding: 0.78rem 0.9rem;
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+
+    .message.visible { display: flex; align-items: flex-start; gap: 0.55rem; }
+    .message i { width: 17px; height: 17px; flex: none; margin-top: 0.05rem; }
+    .message.error {
+      border: 1px solid rgba(255, 140, 122, 0.35);
+      background: rgba(158, 51, 41, 0.15);
+      color: #ffb1a5;
+    }
+    .message.success {
+      border: 1px solid rgba(159, 225, 180, 0.33);
+      background: rgba(60, 144, 85, 0.15);
+      color: #b8efc7;
+    }
+
+    .flight-number {
+      font-family: "Space Mono", monospace;
+      letter-spacing: 0.03em;
+    }
+
+    .window-label {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      grid-column: 1 / -1;
+      margin-top: 0.25rem;
+      padding-top: 1rem;
+      border-top: 1px dashed rgba(154, 178, 189, 0.23);
+      color: var(--amber);
+      font-family: "Space Mono", monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .window-label i { width: 15px; height: 15px; }
+
+    .footer-note {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      margin-top: 1.2rem;
+      color: #75909a;
+      font-family: "Space Mono", monospace;
+      font-size: 0.69rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .footer-note i { width: 15px; height: 15px; color: var(--amber); }
+
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 920px) {
+      .panel-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      .app-shell { padding: 1.15rem; }
+      .top-bar { flex-direction: column; gap: 1rem; }
+      .fields-grid { grid-template-columns: 1fr; }
+      .full-span, .window-label { grid-column: auto; }
+      .form-footer { align-items: stretch; }
+      .form-footer > div { width: 100%; }
+      .action-button, .clear-button { flex: 1; }
+    }
+
+    #offline-config-fallback {
+      display: none;
+      max-width: 32rem;
+      margin: 2rem auto;
+      padding: 1.5rem;
+      color: #edf8fb;
+      font: 16px/1.5 sans-serif;
+    }
+
+    #offline-config-fallback label {
+      display: block;
+      margin: 1rem 0 0.35rem;
+    }
+
+    #offline-config-fallback input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 0.7rem;
+      font: inherit;
+    }
+
+    #offline-config-fallback button {
+      margin-top: 1.2rem;
+      padding: 0.7rem 1rem;
+      font: inherit;
+    }
+
+    #offline-config-fallback-status {
+      white-space: pre-wrap;
+    }
+
+    html.offline-config-fallback .app-shell { display: none; }
+    html.offline-config-fallback #offline-config-fallback { display: block; }
+  </style>
+  <script
+      async
+      src="https://cdn.jsdelivr.net/npm/lucide@0.577.0/dist/umd/lucide.min.js"
+      onerror="document.documentElement.classList.add('offline-config-fallback')"
+  ></script>
+ </head>
+ <body data-template-id="__page-root">
+  <main id="offline-config-fallback">
+    <h1>Flight Radar Setup</h1>
+    <p>The full configuration page needs an external resource that is unavailable. Use this offline form to update Wi-Fi.</p>
+    <form id="offline-wifi-form">
+      <label for="offline-wifi-ssid">Wi-Fi network name</label>
+      <input id="offline-wifi-ssid" name="ssid" maxlength="32" required>
+      <label for="offline-wifi-password">Wi-Fi password</label>
+      <input id="offline-wifi-password" name="password" type="password" maxlength="63" autocomplete="new-password">
+      <button type="submit">Save and connect</button>
+    </form>
+    <p id="offline-config-fallback-status" role="status" aria-live="polite"></p>
+  </main>
+  <div class="app-shell"><img data-template-id="hero-background-image" class="canva-image hero-photo" loading="lazy">
+   <main class="content-frame" aria-labelledby="page-title">
+    <header class="top-bar">
+     <div>
+      <div class="eyebrow"><i data-lucide="radar"></i> <span>Ground Systems Console</span>
+      </div>
+      <h1 class="title">Aviation Config Panel</h1>
+      <p data-template-id="page-subtitle" class="canva-text subtitle"></p>
+     </div>
+     <div data-template-id="system-status" class="canva-tag status-tag"><span class="status-dot" aria-hidden="true"></span> <span>System Standing By</span>
+     </div>
+    </header>
+    <section class="panel-grid" aria-label="Aviation settings and flights">
+     <article class="control-panel">
+      <div class="panel-heading">
+       <div class="panel-icon" aria-hidden="true">
+        <i data-lucide="settings-2"></i>
+       </div>
+       <div>
+        <h2 class="title">CONFIGURATION</h2>
+        <p class="title">Network, AeroAPI, and MQTT uplink settings.</p>
+       </div>
+      </div>
+      <form id="configuration-form" class="panel-body" novalidate>
+       <div class="fields-grid">
+        <div class="field-group"><label for="wifi-ssid">Wi-Fi SSID</label>
+         <div class="input-wrap"><i data-lucide="wifi"></i> <input id="wifi-ssid" name="wifi-ssid" type="text" placeholder="e.g. HomeNetwork" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="wifi-password">Wi-Fi Password</label>
+         <div class="input-wrap"><i data-lucide="key-round"></i> <input placeholder="Leave Blank to Keep Current" id="wifi-password" name="wifi-password" type="password" autocomplete="new-password">
+         </div>
+        </div>
+        <div class="field-group"><label for="aeroapi-key">AeroAPI Key</label>
+         <div class="input-wrap"><i data-lucide="ticket"></i> <input placeholder="Leave Blank to Keep Current" id="aeroapi-key" name="aeroapi-key" type="password" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="aeroapi-url">AeroAPI URL</label>
+         <div class="input-wrap"><i data-lucide="link"></i> <input placeholder="e.g.: https://aeroapi.flightaware.com/aeroapi" id="aeroapi-url" name="aeroapi-url" type="url">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-ip">MQTT Address</label>
+         <div class="input-wrap"><i data-lucide="server"></i> <input placeholder="e.g.: mqtt.example.com" id="mqtt-ip" name="mqtt-ip" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-port">MQTT Port</label>
+         <div class="input-wrap"><i data-lucide="waypoints"></i> <input placeholder="e.g.:60473" id="mqtt-port" name="mqtt-port" type="number" min="1" max="65535">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-websocket-path">MQTT WebSocket Path</label>
+         <div class="input-wrap"><i data-lucide="route"></i> <input placeholder="e.g.: /mqtt" id="mqtt-websocket-path" name="mqtt-websocket-path" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-topic">MQTT Topic</label>
+         <div class="input-wrap"><i data-lucide="route"></i> <input placeholder="e.g.: flightwall/mywall" id="mqtt-topic" name="mqtt-topic" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-username">MQTT Username</label>
+         <div class="input-wrap"><i data-lucide="user-round"></i> <input placeholder="Required by MQTT server" id="mqtt-username" name="mqtt-username" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-password">MQTT Password</label>
+         <div class="input-wrap"><i data-lucide="key-round"></i> <input placeholder="Required by MQTT server" id="mqtt-password" name="mqtt-password" type="password" autocomplete="new-password">
+         </div>
+        </div>
+        <div class="field-group"><label for="mqtt-data-name">MQTT Data Name</label>
+         <div class="input-wrap"><i data-lucide="database"></i> <input placeholder="e.g.: Brad" id="mqtt-data-name" name="mqtt-data-name" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="latitude">Latitude</label>
+         <div class="input-wrap"><i data-lucide="database"></i> <input placeholder="e.g.: 40.1234" id="latitude" name="latitude" type="number" min="-90" max="90" step="any">
+         </div>
+	</div>
+	<div class="field-group"><label for="longitude">Longitude</label>
+         <div class="input-wrap"><i data-lucide="database"></i> <input placeholder="e.g.: -145.1234" id="longitude" name="longitude" type="number" min="-180" max="180" step="any">
+         </div>
+        </div>
+        <div class="field-group"><label for="search-radius">Search Radius (NM)</label>
+         <div class="input-wrap"><i data-lucide="database"></i> <input placeholder="0.5–100 NM" id="search-radius" name="search-radius" type="number" min="0.5" max="100" step="any">
+         </div>
+        </div>
+       </div>
+       <div class="form-footer">
+        <p data-template-id="configuration-helper" class="canva-text helper-copy"></p><button data-template-id="submit-configuration-button" class="canva-button action-button" type="submit"> <i data-lucide="upload-cloud"></i> </button>
+       </div>
+       <div id="configuration-message" class="message" role="status" aria-live="polite"><i id="configuration-message-icon" data-lucide="circle-alert"></i> <span id="configuration-message-text"></span>
+       </div>
+      </form>
+     </article>
+     <article class="control-panel flight-panel">
+      <div class="panel-heading">
+       <div class="panel-icon" aria-hidden="true">
+        <i data-lucide="plane"></i>
+       </div>
+       <div>
+        <h2 class="title">FLIGHT ENTRY</h2>
+        <p class="title">Set callsigns and the active monitoring window. Leave flight numbers blank if there are less legs which you want to monitor.</p>
+       </div>
+      </div>
+      <form id="flights-form" class="panel-body" novalidate>
+       <div class="fields-grid">
+        <div class="field-group"><label for="flight-1">FLIGHT 1 - NUMBER</label>
+         <div class="input-wrap"><i data-lucide="plane-takeoff"></i> <input class="flight-number" placeholder="e.g.: UAL1234" id="flight-1" name="flight-1" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="flight-2">FLIGHT 2 - NUMBER</label>
+         <div class="input-wrap"><i data-lucide="plane-takeoff"></i> <input class="flight-number" placeholder="e.g.: UAL1234" id="flight-2" name="flight-2" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="flight-3">FLIGHT 3 - NUMBER</label>
+         <div class="input-wrap"><i data-lucide="plane-takeoff"></i> <input class="flight-number" placeholder="e.g.: UAL1234" id="flight-3" name="flight-3" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div class="field-group"><label for="flight-4">FLIGHT 4 - NUMBER</label>
+         <div class="input-wrap"><i data-lucide="plane-takeoff"></i> <input class="flight-number" placeholder="e.g.: UAL1234" id="flight-4" name="flight-4" type="text" autocomplete="off">
+         </div>
+        </div>
+        <div data-template-id="validity-window-label" class="canva-divider window-label"><i data-lucide="clock-3"></i> <span>Monitoring Window</span>
+        </div>
+        <div class="field-group"><label for="validity-start">VALIDITY START</label> <input id="validity-start" name="validity-start" type="datetime-local">
+        </div>
+        <div class="field-group"><label for="validity-end">VALIDITY END</label> <input id="validity-end" name="validity-end" type="datetime-local">
+        </div>
+       </div>
+       <div class="form-footer"><button
+    id="clear-flights-button"
+    class="clear-button"
+    type="button">
+    <i data-lucide="rotate-ccw"></i>
+    Clear Flights
+</button><button
+    id="submit-flights-button"
+    class="action-button"
+    type="submit">
+    <i data-lucide="send"></i>
+    </button> 
+       </div>
+       <div id="flights-message" class="message" role="status" aria-live="polite"><i id="flights-message-icon" data-lucide="circle-alert"></i> <span id="flights-message-text"></span>
+       </div>
+      </form>
+     </article>
+    </section>
+    <footer data-template-id="footer-note" class="canva-text footer-note"><i data-lucide="shield-check"></i> <span>Local validation console • Verify all routing details before deployment</span>
+    </footer>
+   </main>
+  </div>
+  <script>
+    function showMessage(messageElement, iconElement, textElement, type, text) {
+      messageElement.classList.remove("error", "success");
+      messageElement.classList.add("visible", type);
+      textElement.textContent = text;
+      iconElement.setAttribute("data-lucide", type === "success" ? "circle-check" : "circle-alert");
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function hideMessage(messageElement) {
+      messageElement.classList.remove("visible", "error", "success");
+    }
+
+    async function loadConfiguration() {
+    try {
+        const response = await fetch("/api/config", {
+            method: "GET",
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+        }
+
+        const config = await response.json();
+
+        document.getElementById("wifi-ssid").value =
+            config.wifiSSID || "";
+
+        document.getElementById("aeroapi-url").value =
+            config.aeroApiURL || "";
+
+        document.getElementById("mqtt-ip").value =
+            config.mqttIP || "";
+
+        document.getElementById("mqtt-port").value =
+            config.mqttPort || "";
+
+        document.getElementById("mqtt-websocket-path").value =
+            config.mqttWebSocketPath || "";
+
+        document.getElementById("mqtt-topic").value =
+            config.mqttTopic || "";
+
+        document.getElementById("mqtt-data-name").value =
+            config.mqttDataName || "";
+
+        document.getElementById("mqtt-username").value =
+            config.mqttUsername || "";
+
+        document.getElementById("mqtt-password").placeholder =
+            config.mqttPasswordConfigured
+                ? "Leave blank to keep current"
+                : "Required by MQTT server";
+
+        document.getElementById("latitude").value =
+            config.latitude ?? "";
+
+        document.getElementById("longitude").value =
+            config.longitude ?? "";
+
+        document.getElementById("search-radius").value =
+            config.searchRadius ?? "";
+
+    } catch (error) {
+        console.error("Could not load configuration:", error);
+    }
+}
+
+    document.addEventListener("DOMContentLoaded", function () {
+  const offlineWifiForm = document.getElementById("offline-wifi-form");
+  const offlineWifiSsid = document.getElementById("offline-wifi-ssid");
+  const offlineWifiPassword = document.getElementById("offline-wifi-password");
+  const offlineStatus = document.getElementById("offline-config-fallback-status");
+
+  fetch("/api/config", { cache: "no-store" })
+    .then(function (response) {
+      if (!response.ok) throw new Error("Could not load current settings.");
+      return response.json();
+    })
+    .then(function (settings) {
+      offlineWifiSsid.value = settings.wifiSSID || "";
+    })
+    .catch(function (error) {
+      offlineStatus.textContent = error.message;
+    });
+
+  offlineWifiForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const submitButton = offlineWifiForm.querySelector("button");
+    submitButton.disabled = true;
+    offlineStatus.textContent = "Testing the Wi-Fi credentials…";
+
+    try {
+      const settingsResponse = await fetch("/api/config", {
+        cache: "no-store"
+      });
+      if (!settingsResponse.ok) {
+        throw new Error("Could not load current settings.");
+      }
+      const settings = await settingsResponse.json();
+      settings.wifiSSID = offlineWifiSsid.value;
+      settings.wifiPassword = offlineWifiPassword.value;
+      settings.aeroApiKey = "";
+
+      const saveResponse = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings)
+      });
+      const result = await saveResponse.json();
+      if (!saveResponse.ok) {
+        throw new Error(result.message || "Could not save Wi-Fi settings.");
+      }
+
+      if (result.pending) {
+        for (let attempt = 0; attempt < 50; attempt++) {
+          await new Promise(function (resolve) {
+            window.setTimeout(resolve, 1000);
+          });
+          const statusResponse = await fetch("/api/config/status", {
+            cache: "no-store"
+          });
+          if (!statusResponse.ok) continue;
+          const applied = await statusResponse.json();
+          if (!applied.pending) {
+            if (!applied.success) {
+              throw new Error(applied.message || "Could not connect to Wi-Fi.");
+            }
+            offlineStatus.textContent = applied.message;
+            return;
+          }
+        }
+        throw new Error("Wi-Fi test is still pending. Check the device display.");
+      }
+
+      if (!result.success) {
+        throw new Error(result.message || "Could not save Wi-Fi settings.");
+      }
+      offlineStatus.textContent = result.message || "Settings saved.";
+    } catch (error) {
+      offlineStatus.textContent = error.message;
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+
+  if (window.lucide) lucide.createIcons();
+
+  loadConfiguration();
+      const configurationForm = document.getElementById("configuration-form");
+      const configurationMessage = document.getElementById("configuration-message");
+      const configurationMessageIcon = document.getElementById("configuration-message-icon");
+      const configurationMessageText = document.getElementById("configuration-message-text");
+
+      const flightsForm = document.getElementById("flights-form");
+      const flightsMessage = document.getElementById("flights-message");
+      const flightsMessageIcon = document.getElementById("flights-message-icon");
+      const flightsMessageText = document.getElementById("flights-message-text");
+      const clearFlightsButton = document.getElementById("clear-flights-button");
+
+configurationForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+
+    const config = {
+        wifiSSID: document.getElementById("wifi-ssid").value,
+        wifiPassword: document.getElementById("wifi-password").value,
+        aeroApiKey: document.getElementById("aeroapi-key").value,
+        aeroApiURL: document.getElementById("aeroapi-url").value,
+        mqttIP: document.getElementById("mqtt-ip").value,
+        mqttPort: Number(document.getElementById("mqtt-port").value),
+        mqttWebSocketPath: document.getElementById("mqtt-websocket-path").value,
+        mqttTopic: document.getElementById("mqtt-topic").value,
+        mqttDataName: document.getElementById("mqtt-data-name").value,
+        mqttUsername: document.getElementById("mqtt-username").value,
+        mqttPassword: document.getElementById("mqtt-password").value,
+        latitude: Number(document.getElementById("latitude").value),
+        longitude: Number(document.getElementById("longitude").value),
+        searchRadius: Number(document.getElementById("search-radius").value)
+    };
+
+    const submitButton = configurationForm.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+        const response = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(config)
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.message || "Failed to save configuration.");
+        }
+
+        if (result.pending) {
+            showMessage(
+                configurationMessage,
+                configurationMessageIcon,
+                configurationMessageText,
+                "success",
+                "Testing Wi-Fi credentials. This can take up to 45 seconds."
+            );
+
+            let applyResult;
+            for (let attempt = 0; attempt < 50; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                try {
+                    const statusResponse = await fetch("/api/config/status", {
+                        cache: "no-store"
+                    });
+                    if (!statusResponse.ok) continue;
+                    applyResult = await statusResponse.json();
+                    if (!applyResult.pending) break;
+                } catch (error) {
+                    // The device may briefly disconnect while changing networks.
+                }
+            }
+
+            if (!applyResult || applyResult.pending) {
+                throw new Error(
+                    "Could not confirm the Wi-Fi change. Check the display and the device's current network address."
+                );
+            }
+            if (!applyResult.success) {
+                throw new Error(applyResult.message || "Failed to connect to Wi-Fi.");
+            }
+        } else if (!result.success) {
+            throw new Error(result.message || "Failed to save configuration.");
+        }
+
+        await loadConfiguration();
+        document.getElementById("wifi-password").value = "";
+        document.getElementById("aeroapi-key").value = "";
+        document.getElementById("mqtt-password").value = "";
+        showMessage(
+            configurationMessage,
+            configurationMessageIcon,
+            configurationMessageText,
+            "success",
+            result.pending
+                ? "Wi-Fi connected and configuration saved."
+                : "Configuration saved to ESP32."
+        );
+    } catch (error) {
+        console.error("Failed to save configuration:", error);
+        showMessage(
+            configurationMessage,
+            configurationMessageIcon,
+            configurationMessageText,
+            "error",
+            error.message || "Could not communicate with the ESP32."
+        );
+    } finally {
+        submitButton.disabled = false;
+    }
+});
+
+	flightsForm.addEventListener("submit", async function (event) {
+	    event.preventDefault();
+
+	    const flightInputs = Array.from(
+		flightsForm.querySelectorAll(".flight-number")
+	    );
+
+	    const enteredFlights = flightInputs.filter(function (input) {
+		return input.value.trim().length > 0;
+	    });
+
+	    const startInput = document.getElementById("validity-start");
+	    const endInput = document.getElementById("validity-end");
+
+	    // Validate at least one flight
+	    if (enteredFlights.length === 0) {
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "error",
+		    "Enter at least one flight number before submitting flights."
+		);
+
+		flightInputs[0].focus();
+		return;
+	    }
+
+	    // Validate dates
+	    if (!startInput.value || !endInput.value) {
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "error",
+		    "Select both a flight validity start and end date/time."
+		);
+
+		(!startInput.value ? startInput : endInput).focus();
+		return;
+	    }
+
+	    const startDate = new Date(startInput.value);
+	    const endDate = new Date(endInput.value);
+
+	    // Validate date order
+	    if (endDate <= startDate) {
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "error",
+		    "Flight validity end must be later than the validity start."
+		);
+
+		endInput.focus();
+		return;
+	    }
+
+	    // Convert JavaScript Date to Unix timestamp in seconds
+	    function unixTimestamp(date) {
+		return Math.floor(date.getTime() / 1000).toString();
+	    }
+
+	    // Build the exact JSON structure expected by the ESP32
+	    const flightData = {
+		flight_data: {},
+		validity: {
+		    start_validity: unixTimestamp(startDate),
+		    end_validity: unixTimestamp(endDate)
+		}
+	    };
+
+	    // Add each entered flight
+	    enteredFlights.forEach(function (input, index) {
+		const flightNumber = input.value.trim();
+
+		flightData.flight_data[String(index + 1)] = {
+		    eta: "",
+		    destination: "",
+		    flight: flightNumber,
+		    origin: "",
+		    etd: ""
+		};
+	    });
+
+	    console.log("Sending flight data:", flightData);
+
+	    try {
+		const response = await fetch("/api/flights", {
+		    method: "POST",
+		    headers: {
+			"Content-Type": "application/json"
+		    },
+		    body: JSON.stringify(flightData)
+		});
+
+		const result = await response.json().catch(function () {
+		    return null;
+		});
+
+		if (!response.ok) {
+		    throw new Error(
+			(result && result.message) ||
+			("Server returned HTTP " + response.status)
+		    );
+		}
+
+		if (!result || !result.success) {
+		    throw new Error("Server rejected the flight data");
+		}
+
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "success",
+		    enteredFlights.length +
+			" flight" +
+			(enteredFlights.length === 1 ? "" : "s") +
+			" submitted successfully."
+		);
+
+	    } catch (error) {
+		console.error("Failed to send flight data:", error);
+
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "error",
+		    error instanceof Error && error.message
+			? error.message
+			: "Could not communicate with the server."
+		);
+	    }
+	});
+
+    clearFlightsButton.addEventListener("click", async function () {
+
+	    // Clear the browser form
+	    flightsForm.reset();
+	    hideMessage(flightsMessage);
+
+	    // JSON representing "no flights configured"
+	    const clearedFlightData = {
+		flight_data: {},
+		validity: {
+		    start_validity: "0",
+		    end_validity: "0"
+		}
+	    };
+
+	    try {
+		const response = await fetch("/api/flights", {
+		    method: "POST",
+		    headers: {
+			"Content-Type": "application/json"
+		    },
+		    body: JSON.stringify(clearedFlightData)
+		});
+
+		if (!response.ok) {
+		    throw new Error("Server returned HTTP " + response.status);
+		}
+
+		const result = await response.json();
+
+		if (!result.success) {
+		    throw new Error("Server rejected the clear operation");
+		}
+
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "success",
+		    "Flight configuration cleared."
+		);
+
+	    } catch (error) {
+		console.error("Failed to clear flight data:", error);
+
+		showMessage(
+		    flightsMessage,
+		    flightsMessageIcon,
+		    flightsMessageText,
+		    "error",
+		    "Could not clear flight configuration on the server."
+		);
+	    }
+
+	    document.getElementById("flight-1").focus();
+	});
+});
+  </script>
+ </body>
+</html>

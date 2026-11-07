@@ -1,6 +1,6 @@
 #pragma once
 
-// Copy this file to config.h and fill in your values.
+// Copy this file to include/config.h and fill in your values.
 // config.h is gitignored and will not be committed.
 
 // WiFi credentials
@@ -54,3 +54,23 @@
 
 // Display brightness during quiet hours: 20% of normal brightness
 #define QUIET_BRIGHTNESS (PANEL_BRIGHTNESS / 5)
+
+// mDNS hostname (without the .local suffix)
+#define MDNS_HOSTNAME "flightradar"
+
+// Operation mode indicator LEDs
+#define OVERHEAD_MODE_LED_PIN 22
+#define FLIGHT_PLAN_MODE_LED_PIN 21
+
+// AeroAPI configuration
+#define AEROAPI_KEY "your-aeroapi-key"
+#define AEROAPI_URL "https://aeroapi.flightaware.com/aeroapi/"
+
+// MQTT configuration
+#define MQTT_IP "your-mqtt-broker-url-root"
+#define MQTT_PORT 60473
+#define MQTT_WEBSOCKET_PATH "/mqtt"
+#define MQTT_TOPIC "flightradar/your-topic"
+#define MQTT_DATA_NAME "Flight Radar"
+#define MQTT_USERNAME "your-username"
+#define MQTT_PASSWORD "your-password"
