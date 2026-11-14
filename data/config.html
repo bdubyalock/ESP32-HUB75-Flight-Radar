@@ -982,15 +982,37 @@ configurationForm.addEventListener("submit", async function (event) {
 		    throw new Error("Server rejected the flight data");
 		}
 
+		let submissionMessage =
+		    enteredFlights.length +
+		    " flight" +
+		    (enteredFlights.length === 1 ? "" : "s") +
+		    " submitted successfully.";
+		if (result.aeroApiLookupAttempted) {
+		    const enrichedCount = Number(result.aeroApiEnrichedCount) || 0;
+		    if (enrichedCount > 0) {
+			submissionMessage +=
+			    " AeroAPI details loaded for " +
+			    enrichedCount +
+			    " flight" +
+			    (enrichedCount === 1 ? "" : "s") +
+			    ".";
+		    }
+		    if (enrichedCount < enteredFlights.length) {
+			submissionMessage +=
+			    " AeroAPI details were unavailable for " +
+			    (enteredFlights.length - enrichedCount) +
+			    " flight" +
+			    (enteredFlights.length - enrichedCount === 1 ? "" : "s") +
+			    " in the validity window.";
+		    }
+		}
+
 		showMessage(
 		    flightsMessage,
 		    flightsMessageIcon,
 		    flightsMessageText,
 		    "success",
-		    enteredFlights.length +
-			" flight" +
-			(enteredFlights.length === 1 ? "" : "s") +
-			" submitted successfully."
+		    submissionMessage
 		);
 
 	    } catch (error) {

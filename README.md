@@ -106,16 +106,23 @@ The display confirms changed schedules for five seconds; resubmitting an
 unchanged schedule does not interrupt tracking or show another confirmation.
 The display also shows a completion notice when schedule tracking returns to
 overhead mode.
+When a flight plan is submitted through the portal and an AeroAPI key is
+configured, each flight is looked up within the submitted validity window.
+Matching results immediately fill available origin, destination, ETD, and ETA
+values and cache the operating callsign for tracking. The portal reports how
+many flights received AeroAPI details; flights without a match keep their
+submitted data.
 When an AeroAPI key is configured, each flight-plan leg is resolved
 independently using its marketed flight identifier, route, and scheduled
 times. The matching AeroAPI result's `ident_icao` supplies the ADS-B callsign,
 so the operating carrier can vary from flight to flight without hardcoded
 carrier mappings. The schedule format and displayed flight number remain
 unchanged. If AeroAPI cannot find one unambiguous result or has no ICAO
-identifier, tracking falls back to the scheduled flight number. If the
-schedule-window query returns no flights, the device retries the identifier
-lookup without date filters and ranks the results using the route and schedule
-times.
+identifier, tracking falls back to the scheduled flight number. During
+background tracking resolution, if the schedule-window query returns no
+flights, the device retries the identifier lookup without date filters and
+ranks results using the route and schedule times. Portal submission enrichment
+only accepts flights whose departure is inside the submitted validity window.
 Each poll first checks ADS-B for the scheduled or already-resolved callsign;
 when that flight is present, no AeroAPI request is made. A final leg observed
 on the ground after being airborne, or on the ground at/after its ETA, ends
