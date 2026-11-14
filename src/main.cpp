@@ -3184,6 +3184,8 @@ void drawAircraftDetailSlot() {
       detailColor = colRed;
     }
   }
+  display->fillRect(FLIGHT_TEXT_X, FLIGHT_ROW_TYPE, FLIGHT_TEXT_W,
+                    TEXT_CHAR_H, colBlack);
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
                        showSquawk ? squawk : aircraftType,
                        detailColor);
