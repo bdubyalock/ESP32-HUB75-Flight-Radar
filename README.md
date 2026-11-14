@@ -103,7 +103,10 @@ and route lookups run as separate follow-up steps. The final row
 cycles between speed/altitude,
 ETA (or ETD while on the ground), and arrival status. Arrival status compares
 estimated and scheduled ETA using a 15-minute early/late threshold, or shows
-Delayed when AeroAPI reports it.
+Delayed when AeroAPI reports it. While the aircraft is airborne, the divider
+becomes a progress bar from estimated ETD to estimated ETA, falling back to
+scheduled times where estimates are unavailable. Its completed portion is dim
+green when early, dim yellow when late or delayed, and dim gray otherwise.
 Route lookups use 2-second connection and 3-second response timeouts; failed
 overhead route lookups are retried after one minute.
 

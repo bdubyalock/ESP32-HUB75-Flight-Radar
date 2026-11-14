@@ -1995,6 +1995,50 @@ void drawBitmapBWR(int ox, int oy, const char *const *rows, int rowCount,
   }
 }
 
+void drawBitmapPOW(int ox, int oy, const char *const *rows, int rowCount,
+                   uint16_t purpleColor, uint16_t orangeColor,
+                   uint16_t whiteColor) {
+  for (int row = 0; row < rowCount; row++) {
+    for (int col = 0; rows[row][col] != '\0'; col++) {
+      uint16_t color;
+      switch (rows[row][col]) {
+        case 'P':
+          color = purpleColor;
+          break;
+        case 'O':
+          color = orangeColor;
+          break;
+        case 'W':
+          color = whiteColor;
+          break;
+        default:
+          continue;
+      }
+      display->drawPixel(ox + col, oy + row, color);
+    }
+  }
+}
+
+void drawBitmapGK(int ox, int oy, const char *const *rows, int rowCount,
+                  uint16_t goldColor, uint16_t blackColor) {
+  for (int row = 0; row < rowCount; row++) {
+    for (int col = 0; rows[row][col] != '\0'; col++) {
+      uint16_t color;
+      switch (rows[row][col]) {
+        case 'G':
+          color = goldColor;
+          break;
+        case 'K':
+          color = blackColor;
+          break;
+        default:
+          continue;
+      }
+      display->drawPixel(ox + col, oy + row, color);
+    }
+  }
+}
+
 // Air Canada rondelle — 19x17 source art, center-cropped to 15 rows for the
 // 19x15 logo tile (R = red, W = white).
 void drawAcCanadaLogo(int x, int y) {
@@ -2293,11 +2337,12 @@ void drawHelicopterLogo(int x, int y) {
 void drawEnvoyLogo(int x, int y) {
   const uint16_t purple = display->color565(148, 0, 211);
   display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
-  display->setTextSize(1);
-  display->setTextWrap(false);
-  display->setTextColor(purple);
-  display->setCursor(x + 7, y + 4);
-  display->write('e');
+  display->fillRect(x + 5, y + 2, 9, 2, purple);
+  display->fillRect(x + 3, y + 4, 2, 6, purple);
+  display->fillRect(x + 14, y + 4, 2, 2, purple);
+  display->fillRect(x + 3, y + 6, 13, 2, purple);
+  display->fillRect(x + 14, y + 8, 2, 2, purple);
+  display->fillRect(x + 5, y + 10, 9, 2, purple);
 }
 
 void drawGoJetLogo(int x, int y) {
@@ -2332,6 +2377,55 @@ void drawAllegiantLogo(int x, int y) {
   display->drawFastHLine(x + 2, horizonY, FLIGHT_ICON_W - 4, orange);
 }
 
+void drawFedexLogo(int x, int y) {
+  const uint16_t purple = display->color565(102, 45, 145);
+  const uint16_t orange = display->color565(255, 102, 0);
+  // Edit this 19x15 grid: P = purple, O = orange, W = white, . = background.
+  static const char *rows[] = {
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PWWWPWWWPDDPPOOOPPP",
+      "PWPPPWPPPDPDPOPPPPP",
+      "PWWPPWWWPDPDPOOOOPO",
+      "PWPPPWPPPDPDPOPPPOP",
+      "PWPPPWWWpDDPPOOOOPO",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+  };
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+  drawBitmapPOW(x, y, rows, FLIGHT_ICON_H, purple, orange, colWhite);
+}
+
+void drawUpsLogo(int x, int y) {
+  const uint16_t gold = display->color565(190, 155, 80);
+  // Edit this 19x15 grid: G = gold, K = black, . = gold background.
+  static const char *rows[] = {
+      "KKKKKKKKKKKKKKKKKKK",
+      "KKKKKKKGGGGGKKKKKKK",
+      "KKKKKGG.....GGKKKKK",
+      "KKKKG.........GKKKK",
+      "KKKKG.......GGGKKKK",
+      "KKKKG.....GG..GKKKK",
+      "KKKKG...GG....GKKKK",
+      "KKKKGGGG......GKKKK",
+      "KKKKG.........GKKKK",
+      "KKKKKG.......GKKKKK",
+      "KKKKKKG.....GKKKKKK",
+      "KKKKKKKG...GKKKKKKK",
+      "KKKKKKKKG.GKKKKKKKK",
+      "KKKKKKKKKGKKKKKKKKK",
+      "KKKKKKKKKKKKKKKKKKK",
+  };
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, gold);
+  drawBitmapGK(x, y, rows, FLIGHT_ICON_H, gold, colBlack);
+}
+
 void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
   const int x = FLIGHT_ICON_X;
   const int y = FLIGHT_ICON_Y;
@@ -2360,6 +2454,14 @@ void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
   }
   if (strncmp(prefix, "AAY", 3) == 0) {
     drawAllegiantLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "FDX", 3) == 0) {
+    drawFedexLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "UPS", 3) == 0) {
+    drawUpsLogo(x, y);
     return;
   }
   if (strncmp(prefix, "KSU", 3) == 0) {
@@ -3185,7 +3287,7 @@ void drawAircraftDetailSlot() {
     }
   }
   display->fillRect(FLIGHT_TEXT_X, FLIGHT_ROW_TYPE, FLIGHT_TEXT_W,
-                    TEXT_CHAR_H, colBlack);
+                    FLIGHT_ROW_DIVIDER - FLIGHT_ROW_TYPE, colBlack);
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
                        showSquawk ? squawk : aircraftType,
                        detailColor);
@@ -3265,6 +3367,46 @@ const char *flightPlanArrivalStatus() {
     return "LATE";
   }
   return "ON TIME";
+}
+
+uint16_t flightPlanProgressColor() {
+  const char *status = flightPlanArrivalStatus();
+  if (strcmp(status, "EARLY") == 0) {
+    return display->color565(0, 72, 0);
+  }
+  if (strcmp(status, "LATE") == 0 || strcmp(status, "DELAYED") == 0) {
+    return display->color565(96, 64, 0);
+  }
+  return display->color565(30, 30, 30);
+}
+
+void drawFlightPlanProgressLine() {
+  if (!flightPlanHasLiveData || flightPlanAircraft.onGround ||
+      flightPlanEtd == 0 || flightPlanEta <= flightPlanEtd) {
+    display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
+                           display->color565(30, 30, 30));
+    return;
+  }
+
+  display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
+                         display->color565(12, 12, 12));
+  int progressWidth = 0;
+  const time_t now = time(nullptr);
+  if (now > 0) {
+    const uint64_t start = flightPlanEtd;
+    const uint64_t end = flightPlanEta;
+    const uint64_t current = static_cast<uint64_t>(now);
+    if (current >= end) {
+      progressWidth = PANEL_RES_X;
+    } else if (current > start) {
+      progressWidth = static_cast<int>(
+          (current - start) * PANEL_RES_X / (end - start));
+    }
+  }
+  if (progressWidth > 0) {
+    display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, progressWidth,
+                           flightPlanProgressColor());
+  }
 }
 
 void drawFlightPlanPositionRow(int phase) {
@@ -3369,6 +3511,8 @@ void updateFlightPlanDisplayAlternation() {
   const bool updatePosition =
       positionPhase != flightPlanLastPositionPhase || scrollingLocation;
   const bool updateStats = statsPhase != flightPlanLastStatsPhase;
+  drawFlightPlanProgressLine();
+  flightPlanLastBottomRenderMs = millis();
   if (!updatePosition && !updateStats) {
     return;
   }
@@ -3381,7 +3525,6 @@ void updateFlightPlanDisplayAlternation() {
   }
   flightPlanLastPositionPhase = positionPhase;
   flightPlanLastStatsPhase = statsPhase;
-  flightPlanLastBottomRenderMs = millis();
 }
 
 bool getCurrentFlightPlanLeg(JsonDocument &plan, JsonObjectConst &flight) {
@@ -3418,8 +3561,7 @@ void drawFlightPlanDisplay() {
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W,
                        FLIGHT_ROW_CALLSIGN, flightNumber, colCallsign);
   drawAircraftDetailSlot();
-  display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
-                         display->color565(30, 30, 30));
+  drawFlightPlanProgressLine();
 
   drawFlightPlanBottomRows();
   unsigned long elapsedMs = millis() - flightPlanDisplayCycleStartedMs;
