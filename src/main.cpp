@@ -2290,6 +2290,48 @@ void drawHelicopterLogo(int x, int y) {
   drawAirlinePrefixInBox(x, y, w, h, "H", colWhite);
 }
 
+void drawEnvoyLogo(int x, int y) {
+  const uint16_t purple = display->color565(148, 0, 211);
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+  display->setTextSize(1);
+  display->setTextWrap(false);
+  display->setTextColor(purple);
+  display->setCursor(x + 7, y + 4);
+  display->write('e');
+}
+
+void drawGoJetLogo(int x, int y) {
+  const uint16_t blue = display->color565(0, 76, 153);
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, blue);
+  drawAirlinePrefixInBox(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, "GJ", colWhite);
+  display->setTextColor(colWhite);
+  display->setCursor(x + 11, y + 4);
+  display->write('J');
+}
+
+void drawAllegiantLogo(int x, int y) {
+  const uint16_t yellow = display->color565(255, 220, 0);
+  const uint16_t orange = display->color565(255, 112, 0);
+  const int cx = x + FLIGHT_ICON_W / 2;
+  const int horizonY = y + 11;
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+
+  display->drawFastHLine(cx - 2, y + 2, 5, yellow);
+  display->drawFastHLine(cx - 1, y + 3, 3, yellow);
+  display->drawLine(x + 4, y + 4, x + 6, y + 6, orange);
+  display->drawLine(x + FLIGHT_ICON_W - 5, y + 4,
+                    x + FLIGHT_ICON_W - 7, y + 6, orange);
+
+  display->drawFastHLine(cx - 2, y + 5, 5, yellow);
+  display->drawFastHLine(cx - 4, y + 6, 9, display->color565(255, 198, 0));
+  display->drawFastHLine(cx - 5, y + 7, 11,
+                         display->color565(255, 174, 0));
+  display->drawFastHLine(cx - 6, y + 8, 13,
+                         display->color565(255, 150, 0));
+  display->drawFastHLine(cx - 7, y + 9, 15, orange);
+  display->drawFastHLine(x + 2, horizonY, FLIGHT_ICON_W - 4, orange);
+}
+
 void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
   const int x = FLIGHT_ICON_X;
   const int y = FLIGHT_ICON_Y;
@@ -2305,6 +2347,26 @@ void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
 
   if (isHelicopter) {
     drawHelicopterLogo(x, y);
+    return;
+  }
+
+  if (strncmp(prefix, "ENY", 3) == 0) {
+    drawEnvoyLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "GJS", 3) == 0) {
+    drawGoJetLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "AAY", 3) == 0) {
+    drawAllegiantLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "KSU", 3) == 0) {
+    const uint16_t purple = display->color565(148, 0, 211);
+    display->fillRect(x, y, w, h, colBlack);
+    display->drawRect(x, y, w, h, colWhite);
+    drawAirlinePrefixInBox(x, y, w, h, prefix, purple);
     return;
   }
 
