@@ -96,10 +96,16 @@ with the live aircraft type below. The first lower row alternates every five
 seconds between origin/destination and the aircraft's nearby place name; long
 text scrolls across the row. Place names use the public OpenStreetMap
 Nominatim reverse-geocoding service, queried at most once per minute with
-rounded ADS-B coordinates. The final row cycles between speed/altitude,
+rounded ADS-B coordinates. Requests identify this application with a
+project-linked User-Agent and Referer, and use 3-second connection and
+response timeouts. After live flight data is found, OpenSky squawk, location,
+and route lookups run as separate follow-up steps. The final row
+cycles between speed/altitude,
 ETA (or ETD while on the ground), and arrival status. Arrival status compares
 estimated and scheduled ETA using a 15-minute early/late threshold, or shows
 Delayed when AeroAPI reports it.
+Route lookups use 2-second connection and 3-second response timeouts; failed
+overhead route lookups are retried after one minute.
 
 Flight plans can be submitted from the FLIGHT ENTRY portal or received from an
 MQTT broker over WebSockets. The default configuration subscribes to
@@ -129,9 +135,13 @@ carrier mappings. The schedule format and displayed flight number remain
 unchanged. If AeroAPI cannot find one unambiguous result or has no ICAO
 identifier, tracking falls back to the scheduled flight number. During
 background tracking resolution, if the schedule-window query returns no
-flights, the device retries the identifier lookup without date filters and
-ranks results using the route and schedule times. Portal submission enrichment
-only accepts flights whose departure is inside the submitted validity window.
+flights, the device retries the identifier lookup without date filters on a
+later loop iteration and ranks results using the route and schedule times.
+The schedule-window lookup itself is also deferred until after the ADS-B poll,
+so each background AeroAPI query runs in its own loop pass.
+Each background AeroAPI request has a 3-second connection timeout and a
+5-second request timeout. Portal submission enrichment only accepts flights
+whose departure is inside the submitted validity window.
 Each poll first checks ADS-B for the scheduled or already-resolved callsign;
 when that flight is present, no AeroAPI request is made. A final leg observed
 on the ground after being airborne, or on the ground at/after its ETA, ends
@@ -206,6 +216,9 @@ GET https://api.adsb.lol/v2/closest/{lat}/{lon}/{radius_km}
 ```
 
 No API key is required. See the [adsb.lol docs](https://adsb.lol/docs) for response fields.
+Each aircraft-list poll makes one request with a 3-second connection timeout
+and a 5-second response timeout. If a poll fails, the next attempt is scheduled
+after 10 seconds instead of blocking the main loop with multiple retries.
 
 ## Roadmap
 

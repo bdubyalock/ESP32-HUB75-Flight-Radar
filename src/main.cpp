@@ -114,12 +114,14 @@ bool lastApiParseFailed = false;
 bool hasFlightData = false;
 int consecutiveFetchFailures = 0;
 
-const int FLIGHT_FETCH_RETRIES = 3;
-const int ROUTE_FETCH_RETRIES = 3;
+const uint16_t FLIGHT_FETCH_CONNECT_TIMEOUT_MS = 3000;
+const uint16_t FLIGHT_FETCH_TIMEOUT_MS = 5000;
+const uint16_t ROUTE_FETCH_CONNECT_TIMEOUT_MS = 2000;
+const uint16_t ROUTE_FETCH_TIMEOUT_MS = 3000;
 const int MAX_TRACKED_AIRCRAFT = 8;
-const unsigned long ROUTE_FETCH_DELAY_MS = 250;
 const unsigned long FETCH_RETRY_ON_FAIL_MS = 10000;
 const unsigned long OPEN_SKY_FETCH_INTERVAL_MS = 150000;
+const unsigned long ROUTE_LOOKUP_RETRY_INTERVAL_MS = 60000;
 const unsigned long AIRCRAFT_DETAIL_PHASE_MS = 5000;
 const unsigned long FLIGHT_PLAN_POLL_INTERVAL_MS = 15000;
 const unsigned long AEROAPI_RETRY_INTERVAL_MS = 300000;
@@ -155,6 +157,8 @@ unsigned long lastDisplayCycleMs = 0;
 unsigned long aircraftDisplayStartedMs = 0;
 unsigned long lastOpenSkyFetchMs = 0;
 bool openSkyFetchAttempted = false;
+String overheadRouteLookupCallsign;
+unsigned long overheadRouteLookupStartedMs = 0;
 bool bottomShowsRoutePhase = false;
 String lastRenderedCallsign = "";
 OperatingMode operatingMode = MODE_OVERHEAD_FLIGHTS;
@@ -175,6 +179,8 @@ bool flightPlanLandingHoldActive = false;
 unsigned long flightPlanLandingHoldStartedMs = 0;
 bool flightPlanTrackingCallsignResolved = false;
 bool flightPlanRouteLookupAttempted = false;
+bool flightPlanAeroApiLookupPending = false;
+bool flightPlanAeroApiFallbackPending = false;
 unsigned long flightPlanLastRouteLookupMs = 0;
 uint32_t flightPlanEta = 0;
 uint32_t flightPlanEtd = 0;
@@ -209,6 +215,7 @@ uint8_t activeBrightness();
 void clearRoute();
 void resetAircraftDisplayTimer();
 void updateAircraftDetailSlotIfNeeded();
+void updateOverheadDetails();
 void copyStringField(char *dest, size_t destSize, const char *src);
 void setupConfigServer();
 void updateConfigWifiChange();
@@ -229,13 +236,15 @@ void updateFlightPlanDisplayAlternation();
 bool fetchFlightPlanLocation(float latitude, float longitude);
 void pollFlightPlan();
 bool fetchAeroApiFlightDetails(const String &flightNumber,
-                               bool allowUnboundedFallback = true,
                                bool requireValidityWindowMatch = false,
-                               bool *detailsFound = nullptr);
+                               bool *detailsFound = nullptr,
+                               bool includeScheduleWindow = true,
+                               bool *noFlightsReturned = nullptr);
 uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
                                     bool &lookupAttempted);
 void resetCurrentFlightPlanLeg();
 bool fetchFlightPlanAircraft(const String &flightNumber);
+void updateFlightPlanDetails();
 bool advanceFlightPlan();
 bool fetchRoute(const String &callsign);
 bool fetchOpenSkySquawks();
@@ -996,6 +1005,8 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanLandingHoldActive = false;
   flightPlanLandingHoldStartedMs = 0;
   flightPlanRouteLookupAttempted = false;
+  flightPlanAeroApiLookupPending = false;
+  flightPlanAeroApiFallbackPending = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
   flightPlanEtd = 0;
@@ -3457,11 +3468,15 @@ bool flightApiValueIsPresent(JsonVariantConst value) {
 }
 
 bool fetchAeroApiFlightDetails(const String &flightNumber,
-                              bool allowUnboundedFallback,
                               bool requireValidityWindowMatch,
-                              bool *detailsFound) {
+                              bool *detailsFound,
+                              bool includeScheduleWindow,
+                              bool *noFlightsReturned) {
   if (detailsFound != nullptr) {
     *detailsFound = false;
+  }
+  if (noFlightsReturned != nullptr) {
+    *noFlightsReturned = false;
   }
   if (config.aeroApiKey.isEmpty() || WiFi.status() != WL_CONNECTED) {
     return false;
@@ -3493,7 +3508,8 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
     }
 
     HTTPClient http;
-    http.setTimeout(10000);
+    http.setConnectTimeout(3000);
+    http.setTimeout(5000);
     if (!http.begin(url)) {
       Serial.println("AeroAPI request could not be initialized");
       return false;
@@ -3518,19 +3534,13 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
     return true;
   };
 
-  if (!fetchFlights(true)) {
+  if (!fetchFlights(includeScheduleWindow)) {
     return false;
   }
   JsonArray flights = response["flights"].as<JsonArray>();
   if (flights.isNull() || flights.size() == 0) {
-    if (allowUnboundedFallback) {
-      Serial.printf(
-          "AeroAPI returned no flights for %s in the schedule window; retrying without date filters\n",
-          flightNumber.c_str());
-      if (!fetchFlights(false)) {
-        return false;
-      }
-      flights = response["flights"].as<JsonArray>();
+    if (noFlightsReturned != nullptr) {
+      *noFlightsReturned = true;
     }
   }
   if (flights.isNull() || flights.size() == 0) {
@@ -3751,8 +3761,8 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
 
     bool detailsFound = false;
     lookupAttempted = true;
-    bool requestSucceeded = fetchAeroApiFlightDetails(
-        flightNumber, false, true, &detailsFound);
+    bool requestSucceeded =
+        fetchAeroApiFlightDetails(flightNumber, true, &detailsFound);
     if (!requestSucceeded) {
       Serial.printf("Portal AeroAPI enrichment request failed for %s\n",
                     flightNumber.c_str());
@@ -3806,12 +3816,16 @@ bool fetchFlightPlanLocation(float latitude, float longitude) {
   url += String(longitude, 2);
 
   HTTPClient http;
-  http.setTimeout(5000);
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
   if (!http.begin(url)) {
     Serial.println("OpenStreetMap reverse-geocoding request could not be initialized");
     return false;
   }
-  http.setUserAgent("ESP32-HUB75-Flight-Radar/1.0");
+  http.setUserAgent(
+      "ESP32-HUB75-Flight-Radar/1.0 (+https://github.com/bdubyalock/ESP32-HUB75-Flight-Radar)");
+  http.addHeader("Referer",
+                 "https://github.com/bdubyalock/ESP32-HUB75-Flight-Radar");
   http.addHeader("Accept", "application/json");
   int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
@@ -3868,7 +3882,8 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
   String url = "https://api.adsb.lol/v2/callsign/";
   url += encodeUrlPathSegment(flightNumber);
   HTTPClient http;
-  http.setTimeout(10000);
+  http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
   if (!http.begin(url)) {
     Serial.println("ADSB.lol flight lookup could not be initialized");
     return false;
@@ -3911,25 +3926,6 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
     }
     flightPlanAircraft = snapshot;
     flightPlanHasLiveData = true;
-    fetchOpenSkySquawks();
-    if (snapshot.hasPosition) {
-      fetchFlightPlanLocation(snapshot.latitude, snapshot.longitude);
-    }
-    bool routeRetryDue =
-        flightPlanLastRouteLookupMs == 0 ||
-        millis() - flightPlanLastRouteLookupMs >= FLIGHT_PLAN_ROUTE_RETRY_MS;
-    if (!flightPlanRouteLookupAttempted || routeRetryDue) {
-      flightPlanRouteLookupAttempted = true;
-      flightPlanLastRouteLookupMs = millis();
-      if (fetchRoute(flightNumber)) {
-        if (flightPlanOrigin.isEmpty()) {
-          flightPlanOrigin = routeOrigin;
-        }
-        if (flightPlanDestination.isEmpty()) {
-          flightPlanDestination = routeDest;
-        }
-      }
-    }
     if (!snapshot.onGround) {
       flightPlanLegObservedAirborne = true;
       flightPlanAdsbLanded = false;
@@ -3952,6 +3948,122 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
   return true;
 }
 
+void updateFlightPlanDetails() {
+  if (operatingMode != MODE_FLIGHT_PLAN || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (flightPlanAeroApiLookupPending) {
+    if (flightPlanHasLiveData) {
+      flightPlanAeroApiLookupPending = false;
+      return;
+    }
+
+    JsonDocument plan;
+    JsonObjectConst flight;
+    if (!getCurrentFlightPlanLeg(plan, flight)) {
+      Serial.println("AeroAPI lookup skipped: active flight-plan leg is invalid");
+      flightPlanAeroApiLookupPending = false;
+      return;
+    }
+    String flightNumber = flight["flight"] | "";
+    if (flightNumber.isEmpty()) {
+      Serial.println("AeroAPI lookup skipped: active callsign is empty");
+      flightPlanAeroApiLookupPending = false;
+      return;
+    }
+
+    bool noFlightsReturned = false;
+    bool lookupSucceeded =
+        fetchAeroApiFlightDetails(flightNumber, false, nullptr, true,
+                                  &noFlightsReturned);
+    flightPlanAeroApiLookupPending = false;
+    flightPlanAeroApiFallbackPending =
+        lookupSucceeded && noFlightsReturned;
+    if (flightPlanAeroApiFallbackPending) {
+      Serial.printf(
+          "AeroAPI schedule lookup found no flights for %s; deferring unfiltered lookup to a later loop iteration\n",
+          flightNumber.c_str());
+    }
+    aeroApiLastPollMs = millis();
+    return;
+  }
+
+  if (flightPlanAeroApiFallbackPending) {
+    if (flightPlanHasLiveData) {
+      flightPlanAeroApiFallbackPending = false;
+      return;
+    }
+
+    JsonDocument plan;
+    JsonObjectConst flight;
+    if (!getCurrentFlightPlanLeg(plan, flight)) {
+      Serial.println("AeroAPI fallback skipped: active flight-plan leg is invalid");
+      flightPlanAeroApiFallbackPending = false;
+      return;
+    }
+    String flightNumber = flight["flight"] | "";
+    if (flightNumber.isEmpty()) {
+      Serial.println("AeroAPI fallback skipped: active callsign is empty");
+      flightPlanAeroApiFallbackPending = false;
+      return;
+    }
+
+    if (!fetchAeroApiFlightDetails(flightNumber, false, nullptr, false)) {
+      Serial.printf("AeroAPI fallback request failed for %s\n",
+                    flightNumber.c_str());
+    }
+    flightPlanAeroApiFallbackPending = false;
+    aeroApiLastPollMs = millis();
+    return;
+  }
+
+  if (!flightPlanHasLiveData) {
+    return;
+  }
+
+  const unsigned long nowMs = millis();
+  const bool openSkyDue =
+      !openSkyFetchAttempted ||
+      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+  if (openSkyDue) {
+    fetchOpenSkySquawks();
+    flightPlanDisplayDirty = true;
+    return;
+  }
+
+  if (flightPlanAircraft.hasPosition &&
+      (flightPlanLastLocationLookupMs == 0 ||
+       nowMs - flightPlanLastLocationLookupMs >=
+           FLIGHT_PLAN_LOCATION_LOOKUP_MS)) {
+    fetchFlightPlanLocation(flightPlanAircraft.latitude,
+                            flightPlanAircraft.longitude);
+    return;
+  }
+
+  const bool routeLookupDue =
+      !flightPlanRouteLookupAttempted ||
+      flightPlanLastRouteLookupMs == 0 ||
+      nowMs - flightPlanLastRouteLookupMs >= FLIGHT_PLAN_ROUTE_RETRY_MS;
+  if (!routeLookupDue) {
+    return;
+  }
+
+  flightPlanRouteLookupAttempted = true;
+  flightPlanLastRouteLookupMs = nowMs;
+  if (fetchRoute(flightPlanTrackingCallsign.isEmpty()
+                     ? flightPlanAircraft.callsign
+                     : flightPlanTrackingCallsign)) {
+    if (flightPlanOrigin.isEmpty()) {
+      flightPlanOrigin = routeOrigin;
+    }
+    if (flightPlanDestination.isEmpty()) {
+      flightPlanDestination = routeDest;
+    }
+    flightPlanDisplayDirty = true;
+  }
+}
+
 void resetCurrentFlightPlanLeg() {
   showSquawkInTypeSlot = false;
   typeSlotStartedMs = millis();
@@ -3963,6 +4075,8 @@ void resetCurrentFlightPlanLeg() {
   flightPlanLandingHoldStartedMs = 0;
   flightPlanTrackingCallsignResolved = false;
   flightPlanRouteLookupAttempted = false;
+  flightPlanAeroApiLookupPending = false;
+  flightPlanAeroApiFallbackPending = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
   flightPlanEtd = 0;
@@ -4091,6 +4205,8 @@ void pollFlightPlan() {
                            routeLookupCouldNotProvideRoute || etaMissing;
   unsigned long nowMs = millis();
   if (!flightPlanHasLiveData && !config.aeroApiKey.isEmpty() &&
+      !flightPlanAeroApiLookupPending &&
+      !flightPlanAeroApiFallbackPending &&
       aeroApiDataNeeded &&
       (aeroApiLastPollMs == 0 ||
        nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
@@ -4106,8 +4222,7 @@ void pollFlightPlan() {
                              ? ", route lookup incomplete"
                              : ": route lookup incomplete")
                       : "");
-    fetchAeroApiFlightDetails(flightNumber);
-    aeroApiLastPollMs = millis();
+    flightPlanAeroApiLookupPending = true;
   }
 
   time_t now = time(nullptr);
@@ -4171,36 +4286,30 @@ bool fetchRoute(const String &callsign) {
   String body;
   serializeJson(req, body);
 
-  for (int attempt = 1; attempt <= ROUTE_FETCH_RETRIES; attempt++) {
-    HTTPClient http;
-    http.begin("https://flightroutes.opensky-network.org/api/routeset");
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(8000);
-
-    int statusCode = http.POST(body);
-    if (statusCode != HTTP_CODE_OK && statusCode != HTTP_CODE_CREATED) {
-      Serial.printf("Route request failed for %s: HTTP %d (try %d/%d)\n",
-                    callsign.c_str(), statusCode, attempt, ROUTE_FETCH_RETRIES);
-      http.end();
-      if (attempt < ROUTE_FETCH_RETRIES) {
-        delay(ROUTE_FETCH_DELAY_MS * attempt);
-      }
-      continue;
-    }
-
-    String payload = http.getString();
-    http.end();
-
-    if (parseRouteResponse(payload, callsign)) {
-      return true;
-    }
-
-    if (attempt < ROUTE_FETCH_RETRIES) {
-      delay(ROUTE_FETCH_DELAY_MS * attempt);
-    }
+  HTTPClient http;
+  http.setConnectTimeout(ROUTE_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(ROUTE_FETCH_TIMEOUT_MS);
+  if (!http.begin("https://flightroutes.opensky-network.org/api/routeset")) {
+    Serial.println("Route request could not be initialized");
+    return false;
   }
 
-  Serial.printf("Route lookup gave up for %s\n", callsign.c_str());
+  http.addHeader("Content-Type", "application/json");
+  int statusCode = http.POST(body);
+  if (statusCode != HTTP_CODE_OK && statusCode != HTTP_CODE_CREATED) {
+    Serial.printf("Route request failed for %s: HTTP %d\n",
+                  callsign.c_str(), statusCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+  if (parseRouteResponse(payload, callsign)) {
+    return true;
+  }
+
+  Serial.printf("Route lookup failed for %s\n", callsign.c_str());
   return false;
 }
 
@@ -4241,7 +4350,8 @@ bool fetchOpenSkySquawks() {
   url += String(maxLongitude, 6);
 
   HTTPClient http;
-  http.setTimeout(10000);
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
   if (!http.begin(url)) {
     Serial.println("OpenSky squawk request could not be initialized");
     return false;
@@ -4321,6 +4431,43 @@ bool fetchOpenSkySquawks() {
   return true;
 }
 
+void updateOverheadDetails() {
+  if (operatingMode != MODE_OVERHEAD_FLIGHTS || trackedAircraftCount == 0 ||
+      nearestCallsign == "NONE" || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  const unsigned long nowMs = millis();
+  const bool openSkyDue =
+      !openSkyFetchAttempted ||
+      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+  if (openSkyDue) {
+    if (fetchOpenSkySquawks()) {
+      showFlight();
+    }
+    return;
+  }
+
+  if (hasRoute && nearestCallsign == cachedRouteCallsign) {
+    return;
+  }
+
+  const bool routeLookupDue =
+      nearestCallsign != overheadRouteLookupCallsign ||
+      nowMs - overheadRouteLookupStartedMs >=
+          ROUTE_LOOKUP_RETRY_INTERVAL_MS;
+  if (!routeLookupDue) {
+    return;
+  }
+
+  overheadRouteLookupCallsign = nearestCallsign;
+  overheadRouteLookupStartedMs = nowMs;
+  if (fetchRoute(nearestCallsign)) {
+    resetAircraftDisplayTimer();
+    showFlight();
+  }
+}
+
 bool fetchAircraftList() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Flight fetch skipped: WiFi not connected");
@@ -4335,40 +4482,32 @@ bool fetchAircraftList() {
   const int radiusKm = static_cast<int>(lround(config.searchRadius * 1.852));
   url += String(radiusKm);
 
-  String payload;
-  int statusCode = 0;
-
-  for (int attempt = 1; attempt <= FLIGHT_FETCH_RETRIES; attempt++) {
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(10000);
-    http.setUserAgent("Mozilla/5.0");
-    http.addHeader("Accept", "application/json");
-
-    statusCode = http.GET();
-    if (statusCode != HTTP_CODE_OK) {
-      Serial.printf("Flight request failed at URL %s: HTTP %d (try %d/%d)\n", url.c_str(),
-                    statusCode, attempt, FLIGHT_FETCH_RETRIES);
-       Serial.print("WiFi IP: ");
-      Serial.println(WiFi.localIP());
-      http.end();
-      if (attempt < FLIGHT_FETCH_RETRIES) {
-        delay(500 * attempt);
-      }
-      continue;
-    }
-
-    payload = http.getString();
-    http.end();
-    break;
+  HTTPClient http;
+  http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
+  if (!http.begin(url)) {
+    lastApiParseFailed = false;
+    lastApiHttpCode = -1;
+    Serial.println("ADSB.lol aircraft-list request could not be initialized");
+    return false;
   }
+  http.setUserAgent("Mozilla/5.0");
+  http.addHeader("Accept", "application/json");
 
+  const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
+    Serial.printf("Flight request failed at URL %s: HTTP %d\n",
+                  url.c_str(), statusCode);
+    Serial.print("WiFi IP: ");
+    Serial.println(WiFi.localIP());
+    http.end();
     lastApiParseFailed = false;
     lastApiHttpCode = statusCode;
     return false;
   }
 
+  String payload = http.getString();
+  http.end();
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload);
   payload = "";
@@ -4415,8 +4554,6 @@ bool fetchAircraftList() {
 
   displayAircraftIndex = 0;
   applyTrackedAircraft(0);
-  fetchOpenSkySquawks();
-
   if (nearestCallsign != cachedRouteCallsign) {
     clearRoute();
   }
@@ -4450,14 +4587,6 @@ void refreshFlightDisplay() {
   }
 
   showFlight();
-
-  if (fetchRoute(nearestCallsign)) {
-    resetAircraftDisplayTimer();
-    if (REFRESH_INTERVAL_MS > 1000) {
-      typeSlotStartedMs = millis();
-    }
-    showFlight();
-  }
 }
 
 void handleFlightFetchResult(bool ok) {
@@ -4743,10 +4872,16 @@ void loop() {
   }
 
   if (operatingMode == MODE_FLIGHT_PLAN) {
+    bool flightPlanPollAttemptedThisLoop = false;
     if (flightPlanLastPollMs == 0 ||
         millis() - flightPlanLastPollMs >= FLIGHT_PLAN_POLL_INTERVAL_MS) {
       pollFlightPlan();
+      flightPlanPollAttemptedThisLoop = true;
       updateOperatingModeFromFlightPlan();
+    }
+    if (operatingMode == MODE_FLIGHT_PLAN &&
+        !flightPlanPollAttemptedThisLoop) {
+      updateFlightPlanDetails();
     }
     if (operatingMode == MODE_FLIGHT_PLAN && flightPlanDisplayDirty) {
       drawFlightPlanDisplay();
@@ -4766,11 +4901,19 @@ void loop() {
   // display (via activeBrightness); they no longer pause polling, so live
   // traffic is shown whenever it exists.
   unsigned long fetchInterval =
-      hasFlightData ? REFRESH_INTERVAL_MS : FETCH_RETRY_ON_FAIL_MS;
+      hasFlightData && consecutiveFetchFailures == 0
+          ? REFRESH_INTERVAL_MS
+          : FETCH_RETRY_ON_FAIL_MS;
+  bool aircraftFetchAttemptedThisLoop = false;
   if (lastFetchMs == 0 || millis() - lastFetchMs >= fetchInterval) {
     handleFlightFetchResult(fetchAircraftList());
     lastFetchMs = millis();
     lastDisplayCycleMs = millis();
+    aircraftFetchAttemptedThisLoop = true;
+  }
+
+  if (!aircraftFetchAttemptedThisLoop) {
+    updateOverheadDetails();
   }
 
   if (configAccessPointActive) {
