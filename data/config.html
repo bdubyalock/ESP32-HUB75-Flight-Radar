@@ -5,20 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flight Tracker Config Panel</title>
 
-    <script>
-      window.setTimeout(function () {
-        if (!window.lucide) {
-          document.documentElement.classList.add("offline-config-fallback");
-        }
-      }, 8000);
-    </script>
-    <link
-        href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
-        rel="stylesheet"
-        media="print"
-        onload="this.media='all'"
-        onerror="document.documentElement.classList.add('offline-config-fallback')"
-    >
     <style>
     :root {
       --ink: #07131d;
@@ -38,7 +24,7 @@
       margin: 0;
       width: 100%;
       min-height: 100%;
-      font-family: "DM Sans", sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: #edf8fb;
       background: #07131d;
     }
@@ -75,16 +61,6 @@
       mask-image: linear-gradient(to bottom, black, transparent 84%);
     }
 
-    .hero-photo {
-      position: absolute;
-      inset: 0;
-      z-index: -3;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      opacity: 0.36;
-    }
-
     .content-frame {
       width: 100%;
       max-width: 1240px;
@@ -106,7 +82,7 @@
       display: flex;
       align-items: center;
       gap: 0.6rem;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       color: var(--cyan);
       font-size: 0.73rem;
       letter-spacing: 0.14em;
@@ -136,7 +112,7 @@
       padding: 0.6rem 0.8rem;
       border: 1px solid rgba(159, 225, 180, 0.4);
       border-radius: 999px;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.7rem;
       letter-spacing: 0.06em;
       white-space: nowrap;
@@ -192,7 +168,7 @@
 
     .panel-heading h2 {
       margin: 0;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -219,7 +195,7 @@
       display: block;
       margin-bottom: 0.48rem;
       color: #cfe3e8;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.71rem;
       font-weight: 700;
       letter-spacing: 0.055em;
@@ -239,6 +215,22 @@
       pointer-events: none;
     }
 
+    i[data-lucide] {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-style: normal;
+    }
+
+    i[data-lucide]::before {
+      content: "";
+      width: 0.38em;
+      height: 0.38em;
+      border: 1px solid currentColor;
+      border-radius: 2px;
+      transform: rotate(45deg);
+    }
+
     input {
       width: 100%;
       min-width: 0;
@@ -248,7 +240,7 @@
       padding: 0.78rem 0.8rem 0.78rem 2.6rem;
       background: rgba(1, 12, 20, 0.62);
       color: #f4fcff;
-      font-family: "DM Sans", sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 0.94rem;
       transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
     }
@@ -294,7 +286,7 @@
       border-radius: 0.7rem;
       padding: 0.7rem 1rem;
       cursor: pointer;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.73rem;
       font-weight: 700;
       letter-spacing: 0.035em;
@@ -321,7 +313,7 @@
       cursor: pointer;
       background: rgba(255, 255, 255, 0.035);
       color: #c6d8dd;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.73rem;
       font-weight: 700;
       letter-spacing: 0.035em;
@@ -359,7 +351,7 @@
     }
 
     .flight-number {
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       letter-spacing: 0.03em;
     }
 
@@ -372,7 +364,7 @@
       padding-top: 1rem;
       border-top: 1px dashed rgba(154, 178, 189, 0.23);
       color: var(--amber);
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.7rem;
       letter-spacing: 0.1em;
       text-transform: uppercase;
@@ -386,7 +378,7 @@
       gap: 0.55rem;
       margin-top: 1.2rem;
       color: #75909a;
-      font-family: "Space Mono", monospace;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.69rem;
       letter-spacing: 0.04em;
       text-transform: uppercase;
@@ -413,69 +405,19 @@
       .action-button, .clear-button { flex: 1; }
     }
 
-    #offline-config-fallback {
-      display: none;
-      max-width: 32rem;
-      margin: 2rem auto;
-      padding: 1.5rem;
-      color: #edf8fb;
-      font: 16px/1.5 sans-serif;
-    }
-
-    #offline-config-fallback label {
-      display: block;
-      margin: 1rem 0 0.35rem;
-    }
-
-    #offline-config-fallback input {
-      box-sizing: border-box;
-      width: 100%;
-      padding: 0.7rem;
-      font: inherit;
-    }
-
-    #offline-config-fallback button {
-      margin-top: 1.2rem;
-      padding: 0.7rem 1rem;
-      font: inherit;
-    }
-
-    #offline-config-fallback-status {
-      white-space: pre-wrap;
-    }
-
-    html.offline-config-fallback .app-shell { display: none; }
-    html.offline-config-fallback #offline-config-fallback { display: block; }
   </style>
-  <script
-      async
-      src="https://cdn.jsdelivr.net/npm/lucide@0.577.0/dist/umd/lucide.min.js"
-      onerror="document.documentElement.classList.add('offline-config-fallback')"
-  ></script>
  </head>
- <body data-template-id="__page-root">
-  <main id="offline-config-fallback">
-    <h1>Flight Radar Setup</h1>
-    <p>The full configuration page needs an external resource that is unavailable. Use this offline form to update Wi-Fi.</p>
-    <form id="offline-wifi-form">
-      <label for="offline-wifi-ssid">Wi-Fi network name</label>
-      <input id="offline-wifi-ssid" name="ssid" maxlength="32" required>
-      <label for="offline-wifi-password">Wi-Fi password</label>
-      <input id="offline-wifi-password" name="password" type="password" maxlength="63" autocomplete="new-password">
-      <button type="submit">Save and connect</button>
-    </form>
-    <p id="offline-config-fallback-status" role="status" aria-live="polite"></p>
-  </main>
-  <div class="app-shell"><img data-template-id="hero-background-image" class="canva-image hero-photo" loading="lazy">
+ <body>
+  <div class="app-shell">
    <main class="content-frame" aria-labelledby="page-title">
     <header class="top-bar">
      <div>
       <div class="eyebrow"><i data-lucide="radar"></i> <span>Ground Systems Console</span>
       </div>
       <h1 class="title">Aviation Config Panel</h1>
-      <p data-template-id="page-subtitle" class="canva-text subtitle"></p>
+      <p class="subtitle">Manage network, flight tracking, and live traffic settings.</p>
      </div>
-     <div data-template-id="system-status" class="canva-tag status-tag"><span class="status-dot" aria-hidden="true"></span> <span>System Standing By</span>
+     <div class="status-tag"><span class="status-dot" aria-hidden="true"></span> <span id="system-status-text">Loading settings...</span>
      </div>
     </header>
     <section class="panel-grid" aria-label="Aviation settings and flights">
@@ -549,7 +491,7 @@
         </div>
        </div>
        <div class="form-footer">
-        <p data-template-id="configuration-helper" class="canva-text helper-copy"></p><button data-template-id="submit-configuration-button" class="canva-button action-button" type="submit"> <i data-lucide="upload-cloud"></i> </button>
+        <p class="helper-copy">Blank password and API key fields keep their saved values.</p><button class="action-button" type="submit"> <i data-lucide="upload-cloud" aria-hidden="true"></i> Save Settings</button>
        </div>
        <div id="configuration-message" class="message" role="status" aria-live="polite"><i id="configuration-message-icon" data-lucide="circle-alert"></i> <span id="configuration-message-text"></span>
        </div>
@@ -601,14 +543,15 @@
     class="action-button"
     type="submit">
     <i data-lucide="send"></i>
-    </button> 
+    Submit Flights
+</button>
        </div>
        <div id="flights-message" class="message" role="status" aria-live="polite"><i id="flights-message-icon" data-lucide="circle-alert"></i> <span id="flights-message-text"></span>
        </div>
       </form>
      </article>
     </section>
-    <footer data-template-id="footer-note" class="canva-text footer-note"><i data-lucide="shield-check"></i> <span>Local validation console • Verify all routing details before deployment</span>
+    <footer class="footer-note"><i data-lucide="shield-check" aria-hidden="true"></i> <span>Local validation console • Verify all routing details before deployment</span>
     </footer>
    </main>
   </div>
@@ -617,8 +560,6 @@
       messageElement.classList.remove("error", "success");
       messageElement.classList.add("visible", type);
       textElement.textContent = text;
-      iconElement.setAttribute("data-lucide", type === "success" ? "circle-check" : "circle-alert");
-      if (window.lucide) lucide.createIcons();
     }
 
     function hideMessage(messageElement) {
@@ -626,6 +567,7 @@
     }
 
     async function loadConfiguration() {
+    const statusText = document.getElementById("system-status-text");
     try {
         const response = await fetch("/api/config", {
             method: "GET",
@@ -675,92 +617,15 @@
 
         document.getElementById("search-radius").value =
             config.searchRadius ?? "";
+          statusText.textContent = "System Ready";
 
     } catch (error) {
         console.error("Could not load configuration:", error);
+        statusText.textContent = "Settings Unavailable";
     }
 }
 
     document.addEventListener("DOMContentLoaded", function () {
-  const offlineWifiForm = document.getElementById("offline-wifi-form");
-  const offlineWifiSsid = document.getElementById("offline-wifi-ssid");
-  const offlineWifiPassword = document.getElementById("offline-wifi-password");
-  const offlineStatus = document.getElementById("offline-config-fallback-status");
-
-  fetch("/api/config", { cache: "no-store" })
-    .then(function (response) {
-      if (!response.ok) throw new Error("Could not load current settings.");
-      return response.json();
-    })
-    .then(function (settings) {
-      offlineWifiSsid.value = settings.wifiSSID || "";
-    })
-    .catch(function (error) {
-      offlineStatus.textContent = error.message;
-    });
-
-  offlineWifiForm.addEventListener("submit", async function (event) {
-    event.preventDefault();
-    const submitButton = offlineWifiForm.querySelector("button");
-    submitButton.disabled = true;
-    offlineStatus.textContent = "Testing the Wi-Fi credentials…";
-
-    try {
-      const settingsResponse = await fetch("/api/config", {
-        cache: "no-store"
-      });
-      if (!settingsResponse.ok) {
-        throw new Error("Could not load current settings.");
-      }
-      const settings = await settingsResponse.json();
-      settings.wifiSSID = offlineWifiSsid.value;
-      settings.wifiPassword = offlineWifiPassword.value;
-      settings.aeroApiKey = "";
-
-      const saveResponse = await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings)
-      });
-      const result = await saveResponse.json();
-      if (!saveResponse.ok) {
-        throw new Error(result.message || "Could not save Wi-Fi settings.");
-      }
-
-      if (result.pending) {
-        for (let attempt = 0; attempt < 50; attempt++) {
-          await new Promise(function (resolve) {
-            window.setTimeout(resolve, 1000);
-          });
-          const statusResponse = await fetch("/api/config/status", {
-            cache: "no-store"
-          });
-          if (!statusResponse.ok) continue;
-          const applied = await statusResponse.json();
-          if (!applied.pending) {
-            if (!applied.success) {
-              throw new Error(applied.message || "Could not connect to Wi-Fi.");
-            }
-            offlineStatus.textContent = applied.message;
-            return;
-          }
-        }
-        throw new Error("Wi-Fi test is still pending. Check the device display.");
-      }
-
-      if (!result.success) {
-        throw new Error(result.message || "Could not save Wi-Fi settings.");
-      }
-      offlineStatus.textContent = result.message || "Settings saved.";
-    } catch (error) {
-      offlineStatus.textContent = error.message;
-    } finally {
-      submitButton.disabled = false;
-    }
-  });
-
-  if (window.lucide) lucide.createIcons();
-
   loadConfiguration();
       const configurationForm = document.getElementById("configuration-form");
       const configurationMessage = document.getElementById("configuration-message");
