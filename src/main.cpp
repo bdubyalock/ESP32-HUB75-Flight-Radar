@@ -2370,7 +2370,6 @@ void drawEnvoyLogo(int x, int y) {
   display->fillRect(x + 3, y + 4, 2, 6, purple);
   display->fillRect(x + 14, y + 4, 2, 2, purple);
   display->fillRect(x + 3, y + 6, 13, 2, purple);
-  display->fillRect(x + 14, y + 8, 2, 2, purple);
   display->fillRect(x + 5, y + 10, 9, 2, purple);
 }
 
