@@ -169,6 +169,8 @@ Compile-time settings and board/display options live in `include/config.h`.
 The CONFIGURATION form is served by the ESP32 and stores editable settings in
 NVS flash using Preferences; those values override the `config.h` defaults on
 boot. The FLIGHT ENTRY panel submits flight plans directly to the ESP32.
+The version string displayed in `data/config.html` should be updated whenever
+the project version is rolled.
 
 With PlatformIO, build and upload the firmware:
 
