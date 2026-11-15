@@ -2403,7 +2403,8 @@ void drawFedexLogo(int x, int y) {
 }
 
 void drawUpsLogo(int x, int y) {
-  const uint16_t gold = display->color565(190, 155, 80);
+  const uint16_t gold = display->color565(255, 181, 0);
+  const uint16_t brown = display->color565(53, 28, 21);
   // Edit this 19x15 grid: G = gold, K = black, . = gold background.
   static const char *rows[] = {
       "KKKKKKKKKKKKKKKKKKK",
@@ -2422,7 +2423,7 @@ void drawUpsLogo(int x, int y) {
       "KKKKKKKKKGKKKKKKKKK",
       "KKKKKKKKKKKKKKKKKKK",
   };
-  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, gold);
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, brown);
   drawBitmapGK(x, y, rows, FLIGHT_ICON_H, gold, colBlack);
 }
 
