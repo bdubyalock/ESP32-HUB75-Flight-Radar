@@ -3406,14 +3406,25 @@ uint16_t flightPlanProgressColor() {
   if (strcmp(status, "LATE") == 0 || strcmp(status, "DELAYED") == 0) {
     return display->color565(96, 64, 0);
   }
-  return display->color565(30, 30, 30);
+  return display->color565(0, 0, 96);
 }
 
 void drawFlightPlanProgressLine() {
   if (!flightPlanHasLiveData || flightPlanAircraft.onGround ||
       flightPlanEtd == 0 || flightPlanEta <= flightPlanEtd) {
+    const uint16_t color = display->color565(30, 30, 30);
     display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
-                           display->color565(30, 30, 30));
+                           color);
+    /*
+    Serial.printf("Flight progress: ETD=%lu ETA=%lu status=%s color=0x%04X "
+                  "progress=0%% live=%d on_ground=%d\n",
+                  static_cast<unsigned long>(flightPlanEtd),
+                  static_cast<unsigned long>(flightPlanEta),
+                  flightPlanAeroStatus.isEmpty()
+                      ? "unknown"
+                      : flightPlanAeroStatus.c_str(),
+                  color, flightPlanHasLiveData, flightPlanAircraft.onGround);
+    */
     return;
   }
 
@@ -3432,10 +3443,22 @@ void drawFlightPlanProgressLine() {
           (current - start) * PANEL_RES_X / (end - start));
     }
   }
+  const uint16_t color = flightPlanProgressColor();
   if (progressWidth > 0) {
     display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, progressWidth,
-                           flightPlanProgressColor());
+                           color);
   }
+  /*
+  Serial.printf("Flight progress: ETD=%lu ETA=%lu status=%s color=0x%04X "
+                "progress=%d%% live=%d on_ground=%d\n",
+                static_cast<unsigned long>(flightPlanEtd),
+                static_cast<unsigned long>(flightPlanEta),
+                flightPlanAeroStatus.isEmpty()
+                    ? "unknown"
+                    : flightPlanAeroStatus.c_str(),
+                color, progressWidth * 100 / PANEL_RES_X,
+                flightPlanHasLiveData, flightPlanAircraft.onGround);
+  */
 }
 
 void drawFlightPlanPositionRow(int phase) {
