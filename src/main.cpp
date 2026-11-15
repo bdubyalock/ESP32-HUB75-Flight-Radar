@@ -93,6 +93,7 @@ bool ntpAttemptMade = false;
 bool ntpTimeReceived = false;
 String nearestCallsign = "----";
 String nearestAircraftType = "----";
+String nearestAircraftSquawk = "";
 String cachedRouteCallsign = "";
 char routeOrigin[4] = "---";
 char routeDest[4] = "---";
@@ -113,13 +114,17 @@ bool lastApiParseFailed = false;
 bool hasFlightData = false;
 int consecutiveFetchFailures = 0;
 
-const int FLIGHT_FETCH_RETRIES = 3;
-const int ROUTE_FETCH_RETRIES = 3;
+const uint16_t FLIGHT_FETCH_CONNECT_TIMEOUT_MS = 3000;
+const uint16_t FLIGHT_FETCH_TIMEOUT_MS = 5000;
+const uint16_t ROUTE_FETCH_CONNECT_TIMEOUT_MS = 2000;
+const uint16_t ROUTE_FETCH_TIMEOUT_MS = 3000;
 const int MAX_TRACKED_AIRCRAFT = 8;
-const unsigned long ROUTE_FETCH_DELAY_MS = 250;
 const unsigned long FETCH_RETRY_ON_FAIL_MS = 10000;
+const unsigned long OPEN_SKY_FETCH_INTERVAL_MS = 150000;
+const unsigned long ROUTE_LOOKUP_RETRY_INTERVAL_MS = 60000;
+const unsigned long AIRCRAFT_DETAIL_PHASE_MS = 5000;
 const unsigned long FLIGHT_PLAN_POLL_INTERVAL_MS = 15000;
-const unsigned long AEROAPI_RETRY_INTERVAL_MS = 300000;
+const unsigned long AEROAPI_RETRY_INTERVAL_MS = 10UL * 60UL * 1000UL;
 const unsigned long FLIGHT_PLAN_ETA_GRACE_SECONDS = 1800;
 const unsigned long FLIGHT_PLAN_LANDED_HOLD_MS = 5UL * 60 * 1000;
 const unsigned long FLIGHT_PLAN_ROUTE_RETRY_MS = 300000;
@@ -130,6 +135,8 @@ const unsigned long FLIGHT_PLAN_LOCATION_LOOKUP_MS = 60000;
 struct AircraftSnapshot {
   char callsign[12];
   char type[8];
+  char icao24[7];
+  char squawk[5];
   float latitude;
   float longitude;
   bool hasPosition;
@@ -148,10 +155,18 @@ int trackedAircraftCount = 0;
 int displayAircraftIndex = 0;
 unsigned long lastDisplayCycleMs = 0;
 unsigned long aircraftDisplayStartedMs = 0;
+unsigned long lastOpenSkyFetchMs = 0;
+bool openSkyFetchAttempted = false;
+String overheadRouteLookupCallsign;
+unsigned long overheadRouteLookupStartedMs = 0;
 bool bottomShowsRoutePhase = false;
 String lastRenderedCallsign = "";
 OperatingMode operatingMode = MODE_OVERHEAD_FLIGHTS;
 String flightPlanJson;
+String lastMqttFlightPlanJson;
+bool hasLastMqttFlightPlan = false;
+bool portalClearSuppressesUnchangedMqtt = false;
+bool portalFlightPlanHasPriority = false;
 uint8_t flightPlanCount = 0;
 uint32_t flightPlanStartValidity = 0;
 uint32_t flightPlanEndValidity = 0;
@@ -165,6 +180,8 @@ bool flightPlanLandingHoldActive = false;
 unsigned long flightPlanLandingHoldStartedMs = 0;
 bool flightPlanTrackingCallsignResolved = false;
 bool flightPlanRouteLookupAttempted = false;
+bool flightPlanAeroApiLookupPending = false;
+bool flightPlanAeroApiFallbackPending = false;
 unsigned long flightPlanLastRouteLookupMs = 0;
 uint32_t flightPlanEta = 0;
 uint32_t flightPlanEtd = 0;
@@ -173,6 +190,11 @@ uint32_t flightPlanEstimatedEta = 0;
 String flightPlanOrigin;
 String flightPlanDestination;
 String flightPlanTrackingCallsign;
+String flightPlanResolvedCallsigns[4];
+String flightPlanAeroStatuses[4];
+uint32_t flightPlanScheduledEtas[4] = {};
+uint32_t flightPlanEstimatedEtas[4] = {};
+bool flightPlanAeroApiLandedByLeg[4] = {};
 String flightPlanLocation = "LOCATION UNKNOWN";
 String flightPlanAeroStatus;
 AircraftSnapshot flightPlanAircraft;
@@ -184,16 +206,17 @@ unsigned long flightPlanLastBottomRenderMs = 0;
 int flightPlanLastPositionPhase = -1;
 int flightPlanLastStatsPhase = -1;
 bool flightPlanDisplayDirty = true;
-bool showCallsignInTypeSlot = false;
-bool callsignTypeSwapPending = false;
+bool showSquawkInTypeSlot = false;
 unsigned long typeSlotStartedMs = 0;
 
 void refreshFlightDisplay();
 void showFlight();
+void drawAircraftDetailSlot();
 uint8_t activeBrightness();
 void clearRoute();
 void resetAircraftDisplayTimer();
-void updateAircraftTypeSlotIfNeeded();
+void updateAircraftDetailSlotIfNeeded();
+void updateOverheadDetails();
 void copyStringField(char *dest, size_t destSize, const char *src);
 void setupConfigServer();
 void updateConfigWifiChange();
@@ -213,10 +236,19 @@ void drawFlightPlanDisplay();
 void updateFlightPlanDisplayAlternation();
 bool fetchFlightPlanLocation(float latitude, float longitude);
 void pollFlightPlan();
-bool fetchAeroApiFlightDetails(const String &flightNumber);
+bool fetchAeroApiFlightDetails(const String &flightNumber,
+                               bool requireValidityWindowMatch = false,
+                               bool *detailsFound = nullptr,
+                               bool includeScheduleWindow = true,
+                               bool *noFlightsReturned = nullptr);
+uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
+                                    bool &lookupAttempted);
+void resetCurrentFlightPlanLeg();
 bool fetchFlightPlanAircraft(const String &flightNumber);
+void updateFlightPlanDetails();
 bool advanceFlightPlan();
 bool fetchRoute(const String &callsign);
+bool fetchOpenSkySquawks();
 
 void setOperatingMode(OperatingMode mode) {
   if (operatingMode == MODE_FLIGHT_PLAN &&
@@ -704,8 +736,10 @@ void handleGetFlightPlan() {
   configServer.send(200, "application/json", flightPlanJson);
 }
 
-bool flightPlansEqual(const String &candidateJson) {
-  if (flightPlanJson.isEmpty()) {
+bool flightPlansEqual(const String &existingJson,
+                      const String &candidateJson,
+                      bool allowOmittedDetails = true) {
+  if (existingJson.isEmpty()) {
     JsonDocument candidate;
     DeserializationError error = deserializeJson(candidate, candidateJson);
     if (error) {
@@ -719,7 +753,7 @@ bool flightPlansEqual(const String &candidateJson) {
   JsonDocument existing;
   JsonDocument candidate;
   DeserializationError existingError =
-      deserializeJson(existing, flightPlanJson);
+      deserializeJson(existing, existingJson);
   if (existingError) {
     Serial.printf("Existing flight plan comparison failed: %s\n",
                   existingError.c_str());
@@ -768,12 +802,20 @@ bool flightPlansEqual(const String &candidateJson) {
     if (existingFlight.isNull()) {
       continue;
     }
-    if (strcmp(existingFlight["destination"] | "",
-               candidateFlight["destination"] | "") != 0 ||
-        strcmp(existingFlight["flight"] | "",
-               candidateFlight["flight"] | "") != 0 ||
-        strcmp(existingFlight["origin"] | "",
-               candidateFlight["origin"] | "") != 0) {
+    const char *candidateDestination = candidateFlight["destination"] | "";
+    const char *candidateFlightNumber = candidateFlight["flight"] | "";
+    const char *candidateOrigin = candidateFlight["origin"] | "";
+    if (strcmp(existingFlight["flight"] | "", candidateFlightNumber) != 0 ||
+        (!allowOmittedDetails &&
+         strcmp(existingFlight["destination"] | "", candidateDestination) !=
+             0) ||
+        (!allowOmittedDetails &&
+         strcmp(existingFlight["origin"] | "", candidateOrigin) != 0) ||
+        (allowOmittedDetails && candidateDestination[0] != '\0' &&
+         strcmp(existingFlight["destination"] | "", candidateDestination) !=
+             0) ||
+        (allowOmittedDetails && candidateOrigin[0] != '\0' &&
+         strcmp(existingFlight["origin"] | "", candidateOrigin) != 0)) {
       return false;
     }
 
@@ -793,10 +835,16 @@ bool flightPlansEqual(const String &candidateJson) {
                                      existingEtd) ||
         !readOptionalFlightTimestamp(candidateFlight["etd"], candidateHasEtd,
                                      candidateEtd) ||
-        existingHasEta != candidateHasEta ||
-        (existingHasEta && existingEta != candidateEta) ||
-        existingHasEtd != candidateHasEtd ||
-        (existingHasEtd && existingEtd != candidateEtd)) {
+        (allowOmittedDetails
+             ? (candidateHasEta &&
+                (!existingHasEta || existingEta != candidateEta))
+             : (existingHasEta != candidateHasEta ||
+                (existingHasEta && existingEta != candidateEta))) ||
+        (allowOmittedDetails
+             ? (candidateHasEtd &&
+                (!existingHasEtd || existingEtd != candidateEtd))
+             : (existingHasEtd != candidateHasEtd ||
+                (existingHasEtd && existingEtd != candidateEtd)))) {
       return false;
     }
   }
@@ -916,7 +964,52 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
     return reject(500, "Could not store flight plan in memory.");
   }
 
-  if (flightPlansEqual(serialized)) {
+  if (source == FLIGHT_PLAN_FROM_MQTT) {
+    const time_t now = time(nullptr);
+    const bool landingHoldActive =
+        flightPlanLandingHoldActive &&
+        millis() - flightPlanLandingHoldStartedMs <
+            FLIGHT_PLAN_LANDED_HOLD_MS;
+    const bool portalPlanStillActive =
+        portalFlightPlanHasPriority && flightPlanCount > 0 &&
+        !flightPlanCompleted &&
+        (now < VALID_SYSTEM_TIME_EPOCH ||
+         static_cast<uint64_t>(now) < flightPlanEndValidity ||
+         landingHoldActive);
+    if (portalPlanStillActive) {
+      Serial.println(
+          "Ignoring MQTT flight plan while a portal flight plan has priority");
+      response["success"] = true;
+      response["ignored"] = true;
+      response["message"] = "A portal flight plan has priority.";
+      response["storedIn"] = "RAM";
+      response["flightCount"] = flightPlanCount;
+      return 200;
+    }
+
+    bool unchangedMqttPlan =
+        hasLastMqttFlightPlan &&
+        flightPlansEqual(lastMqttFlightPlanJson, serialized, false);
+    if (portalClearSuppressesUnchangedMqtt && unchangedMqttPlan) {
+      Serial.println(
+          "Ignoring unchanged MQTT flight plan after portal clear");
+      response["success"] = true;
+      response["storedIn"] = "RAM";
+      response["flightCount"] = flightPlanCount;
+      return 200;
+    }
+
+    lastMqttFlightPlanJson = serialized;
+    hasLastMqttFlightPlan = true;
+    portalClearSuppressesUnchangedMqtt = false;
+    portalFlightPlanHasPriority = false;
+  } else {
+    portalFlightPlanHasPriority = storedFlightCount > 0;
+    portalClearSuppressesUnchangedMqtt =
+        storedFlightCount == 0 && hasLastMqttFlightPlan;
+  }
+
+  if (flightPlansEqual(flightPlanJson, serialized)) {
     Serial.println("Received flight plan is unchanged; keeping current tracking state");
     response["success"] = true;
     response["storedIn"] = "RAM";
@@ -937,6 +1030,8 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanLandingHoldActive = false;
   flightPlanLandingHoldStartedMs = 0;
   flightPlanRouteLookupAttempted = false;
+  flightPlanAeroApiLookupPending = false;
+  flightPlanAeroApiFallbackPending = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
   flightPlanEtd = 0;
@@ -946,6 +1041,13 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanDestination = "";
   flightPlanTrackingCallsign = "";
   flightPlanTrackingCallsignResolved = false;
+  for (uint8_t index = 0; index < 4; index++) {
+    flightPlanResolvedCallsigns[index] = "";
+    flightPlanAeroStatuses[index] = "";
+    flightPlanScheduledEtas[index] = 0;
+    flightPlanEstimatedEtas[index] = 0;
+    flightPlanAeroApiLandedByLeg[index] = false;
+  }
   flightPlanLocation = "LOCATION UNKNOWN";
   flightPlanAeroStatus = "";
   flightPlanLastPollMs = 0;
@@ -956,6 +1058,20 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanLastPositionPhase = -1;
   flightPlanLastStatsPhase = -1;
   flightPlanDisplayDirty = true;
+  bool aeroApiLookupAttempted = false;
+  uint8_t aeroApiEnrichedCount = 0;
+  if (source == FLIGHT_PLAN_FROM_PORTAL && storedFlightCount > 0) {
+    aeroApiEnrichedCount =
+        enrichFlightPlanFromAeroApi(storedPlan, storedFlightCount,
+                                    aeroApiLookupAttempted);
+    String enrichedSerialized;
+    if (serializeJson(storedPlan, enrichedSerialized) > 0) {
+      flightPlanJson = enrichedSerialized;
+    } else {
+      Serial.println("Could not serialize AeroAPI-enriched flight plan; retaining submitted schedule");
+    }
+    resetCurrentFlightPlanLeg();
+  }
   if (flightPlanCount == 0) {
     Serial.println("Flight plan cleared from RAM");
   } else {
@@ -968,6 +1084,10 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   response["success"] = true;
   response["storedIn"] = "RAM";
   response["flightCount"] = flightPlanCount;
+  if (source == FLIGHT_PLAN_FROM_PORTAL) {
+    response["aeroApiLookupAttempted"] = aeroApiLookupAttempted;
+    response["aeroApiEnrichedCount"] = aeroApiEnrichedCount;
+  }
   if (flightPlanCount > 0) {
     displayNotice = source == FLIGHT_PLAN_FROM_MQTT
                         ? DISPLAY_NOTICE_RECEIVED_MQTT
@@ -1151,8 +1271,12 @@ void processMqttPublish(const uint8_t *packet, size_t packetLength,
         int statusCode =
             storeFlightPlan(request, response, FLIGHT_PLAN_FROM_MQTT);
         if (statusCode == 200) {
-          Serial.printf("MQTT flight plan received: %u flight(s)\n",
-                        flightPlanCount);
+          if (response["ignored"] | false) {
+            Serial.println("MQTT flight plan ignored: portal plan has priority");
+          } else {
+            Serial.printf("MQTT flight plan received: %u flight(s)\n",
+                          flightPlanCount);
+          }
         } else {
           Serial.printf("MQTT flight plan rejected: %s\n",
                         response["message"] | "invalid payload");
@@ -1900,6 +2024,50 @@ void drawBitmapBWR(int ox, int oy, const char *const *rows, int rowCount,
   }
 }
 
+void drawBitmapPOW(int ox, int oy, const char *const *rows, int rowCount,
+                   uint16_t purpleColor, uint16_t orangeColor,
+                   uint16_t whiteColor) {
+  for (int row = 0; row < rowCount; row++) {
+    for (int col = 0; rows[row][col] != '\0'; col++) {
+      uint16_t color;
+      switch (rows[row][col]) {
+        case 'P':
+          color = purpleColor;
+          break;
+        case 'O':
+          color = orangeColor;
+          break;
+        case 'W':
+          color = whiteColor;
+          break;
+        default:
+          continue;
+      }
+      display->drawPixel(ox + col, oy + row, color);
+    }
+  }
+}
+
+void drawBitmapGK(int ox, int oy, const char *const *rows, int rowCount,
+                  uint16_t goldColor, uint16_t blackColor) {
+  for (int row = 0; row < rowCount; row++) {
+    for (int col = 0; rows[row][col] != '\0'; col++) {
+      uint16_t color;
+      switch (rows[row][col]) {
+        case 'G':
+          color = goldColor;
+          break;
+        case 'K':
+          color = blackColor;
+          break;
+        default:
+          continue;
+      }
+      display->drawPixel(ox + col, oy + row, color);
+    }
+  }
+}
+
 // Air Canada rondelle — 19x17 source art, center-cropped to 15 rows for the
 // 19x15 logo tile (R = red, W = white).
 void drawAcCanadaLogo(int x, int y) {
@@ -2195,6 +2363,98 @@ void drawHelicopterLogo(int x, int y) {
   drawAirlinePrefixInBox(x, y, w, h, "H", colWhite);
 }
 
+void drawEnvoyLogo(int x, int y) {
+  const uint16_t purple = display->color565(148, 0, 211);
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+  display->fillRect(x + 5, y + 2, 9, 2, purple);
+  display->fillRect(x + 3, y + 4, 2, 6, purple);
+  display->fillRect(x + 14, y + 4, 2, 2, purple);
+  display->fillRect(x + 3, y + 6, 13, 2, purple);
+  display->fillRect(x + 5, y + 10, 9, 2, purple);
+}
+
+void drawGoJetLogo(int x, int y) {
+  const uint16_t blue = display->color565(0, 76, 153);
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, blue);
+  drawAirlinePrefixInBox(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, "GJ", colWhite);
+  display->setTextColor(colWhite);
+  display->setCursor(x + 11, y + 4);
+  display->write('J');
+}
+
+void drawAllegiantLogo(int x, int y) {
+  const uint16_t yellow = display->color565(255, 220, 0);
+  const uint16_t orange = display->color565(255, 112, 0);
+  const int cx = x + FLIGHT_ICON_W / 2;
+  const int horizonY = y + 11;
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+
+  display->drawFastHLine(cx - 2, y + 2, 5, yellow);
+  display->drawFastHLine(cx - 1, y + 3, 3, yellow);
+  display->drawLine(x + 4, y + 4, x + 6, y + 6, orange);
+  display->drawLine(x + FLIGHT_ICON_W - 5, y + 4,
+                    x + FLIGHT_ICON_W - 7, y + 6, orange);
+
+  display->drawFastHLine(cx - 2, y + 5, 5, yellow);
+  display->drawFastHLine(cx - 4, y + 6, 9, display->color565(255, 198, 0));
+  display->drawFastHLine(cx - 5, y + 7, 11,
+                         display->color565(255, 174, 0));
+  display->drawFastHLine(cx - 6, y + 8, 13,
+                         display->color565(255, 150, 0));
+  display->drawFastHLine(cx - 7, y + 9, 15, orange);
+  display->drawFastHLine(x + 2, horizonY, FLIGHT_ICON_W - 4, orange);
+}
+
+void drawFedexLogo(int x, int y) {
+  const uint16_t purple = display->color565(102, 45, 145);
+  const uint16_t orange = display->color565(255, 102, 0);
+  // Edit this 19x15 grid: P = purple, O = orange, W = white, . = background.
+  static const char *rows[] = {
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PWWWPWWWPWWPPOOOPPP",
+      "PWPPPWPPPWPWPOPPPPP",
+      "PWWPPWWWPWPWPOOOOPO",
+      "PWPPPWPPPWPWPOPPPOP",
+      "PWPPPWWWpWWPPOOOOPO",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+      "PPPPPPPPPPPPPPPPPPP",
+  };
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, colBlack);
+  drawBitmapPOW(x, y, rows, FLIGHT_ICON_H, purple, orange, colWhite);
+}
+
+void drawUpsLogo(int x, int y) {
+  const uint16_t gold = display->color565(255, 181, 0);
+  const uint16_t brown = display->color565(53, 28, 21);
+  // Edit this 19x15 grid: G = gold, K = black, . = gold background.
+  static const char *rows[] = {
+      "KKKKKKKKKKKKKKKKKKK",
+      "KKKKKKKGGGGGKKKKKKK",
+      "KKKKKGG.....GGKKKKK",
+      "KKKKG.........GKKKK",
+      "KKKKG.......GGGKKKK",
+      "KKKKG.....GG..GKKKK",
+      "KKKKG...GG....GKKKK",
+      "KKKKGGGG......GKKKK",
+      "KKKKG.........GKKKK",
+      "KKKKKG.......GKKKKK",
+      "KKKKKKG.....GKKKKKK",
+      "KKKKKKKG...GKKKKKKK",
+      "KKKKKKKKG.GKKKKKKKK",
+      "KKKKKKKKKGKKKKKKKKK",
+      "KKKKKKKKKKKKKKKKKKK",
+  };
+  display->fillRect(x, y, FLIGHT_ICON_W, FLIGHT_ICON_H, brown);
+  drawBitmapGK(x, y, rows, FLIGHT_ICON_H, gold, colBlack);
+}
+
 void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
   const int x = FLIGHT_ICON_X;
   const int y = FLIGHT_ICON_Y;
@@ -2210,6 +2470,34 @@ void drawAirlineSymbol(const char *callsign, bool isHelicopter) {
 
   if (isHelicopter) {
     drawHelicopterLogo(x, y);
+    return;
+  }
+
+  if (strncmp(prefix, "ENY", 3) == 0) {
+    drawEnvoyLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "GJS", 3) == 0) {
+    drawGoJetLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "AAY", 3) == 0) {
+    drawAllegiantLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "FDX", 3) == 0) {
+    drawFedexLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "UPS", 3) == 0) {
+    drawUpsLogo(x, y);
+    return;
+  }
+  if (strncmp(prefix, "KSU", 3) == 0) {
+    const uint16_t purple = display->color565(148, 0, 211);
+    display->fillRect(x, y, w, h, colBlack);
+    display->drawRect(x, y, w, h, colWhite);
+    drawAirlinePrefixInBox(x, y, w, h, prefix, purple);
     return;
   }
 
@@ -2803,6 +3091,8 @@ bool parsePlaneSnapshot(JsonObject plane, AircraftSnapshot &snap,
 
   const char *type = plane["t"] | "----";
   copyStringField(snap.type, sizeof(snap.type), type);
+  const char *icao24 = plane["hex"] | "";
+  copyStringField(snap.icao24, sizeof(snap.icao24), icao24);
 
   if ((plane["lat"].is<double>() || plane["lat"].is<int>()) &&
       (plane["lon"].is<double>() || plane["lon"].is<int>())) {
@@ -2870,6 +3160,7 @@ void applyTrackedAircraft(int index) {
   if (index < 0 || index >= trackedAircraftCount) {
     nearestCallsign = "NONE";
     nearestAircraftType = "----";
+    nearestAircraftSquawk = "";
     nearestDistanceKm = 0.0;
     nearestBearing = 0.0;
     nearestGroundSpeedKts = 0.0;
@@ -2883,6 +3174,7 @@ void applyTrackedAircraft(int index) {
   const AircraftSnapshot &snap = trackedAircraft[index];
   nearestCallsign = snap.callsign;
   nearestAircraftType = snap.type;
+  nearestAircraftSquawk = snap.squawk;
   nearestDistanceKm = snap.distanceKm;
   nearestBearing = snap.bearing;
   nearestTrack = snap.track;
@@ -2924,15 +3216,24 @@ void resetAircraftDisplayTimer() {
   bottomShowsRoutePhase = bottomShowsRouteView();
 }
 
-void updateAircraftTypeSlotIfNeeded() {
-  if (!callsignTypeSwapPending ||
-      millis() - typeSlotStartedMs < REFRESH_INTERVAL_MS / 2) {
+bool currentAircraftHasSquawk() {
+  if (operatingMode == MODE_FLIGHT_PLAN) {
+    return flightPlanHasLiveData && flightPlanAircraft.squawk[0] != '\0';
+  }
+  return !nearestAircraftSquawk.isEmpty();
+}
+
+void updateAircraftDetailSlotIfNeeded() {
+  if (!currentAircraftHasSquawk()) {
+    return;
+  }
+  if (millis() - typeSlotStartedMs < AIRCRAFT_DETAIL_PHASE_MS) {
     return;
   }
 
-  callsignTypeSwapPending = false;
-  showCallsignInTypeSlot = true;
-  showFlight();
+  typeSlotStartedMs = millis();
+  showSquawkInTypeSlot = !showSquawkInTypeSlot;
+  drawAircraftDetailSlot();
 }
 
 void updateBottomPhaseIfNeeded() {
@@ -2994,6 +3295,33 @@ void drawBottomLine() {
   drawBottomStatsRow();
 }
 
+void drawAircraftDetailSlot() {
+  const char *aircraftType =
+      operatingMode == MODE_FLIGHT_PLAN
+          ? (flightPlanHasLiveData ? flightPlanAircraft.type : "WAITING")
+          : nearestAircraftType.c_str();
+  const char *squawk =
+      operatingMode == MODE_FLIGHT_PLAN
+          ? flightPlanAircraft.squawk
+          : nearestAircraftSquawk.c_str();
+  const bool showSquawk = showSquawkInTypeSlot && squawk[0] != '\0';
+  uint16_t detailColor = colType;
+  if (showSquawk) {
+    if (strcmp(squawk, "1200") == 0 || strcmp(squawk, "7000") == 0) {
+      detailColor = colGreen;
+    } else if (strcmp(squawk, "7500") == 0 ||
+               strcmp(squawk, "7600") == 0 ||
+               strcmp(squawk, "7700") == 0) {
+      detailColor = colRed;
+    }
+  }
+  display->fillRect(FLIGHT_TEXT_X, FLIGHT_ROW_TYPE, FLIGHT_TEXT_W,
+                    FLIGHT_ROW_DIVIDER - FLIGHT_ROW_TYPE, colBlack);
+  printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
+                       showSquawk ? squawk : aircraftType,
+                       detailColor);
+}
+
 void showFlight() {
   if (operatingMode == MODE_FLIGHT_PLAN) {
     drawFlightPlanDisplay();
@@ -3007,12 +3335,7 @@ void showFlight() {
 
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_CALLSIGN,
                        nearestCallsign.c_str(), colCallsign);
-  const char *typeSlotText = showCallsignInTypeSlot
-                                 ? nearestCallsign.c_str()
-                                 : nearestAircraftType.c_str();
-  uint16_t typeSlotColor = showCallsignInTypeSlot ? colCallsign : colType;
-  printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
-                       typeSlotText, typeSlotColor);
+  drawAircraftDetailSlot();
 
   display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
                          display->color565(30, 30, 30));
@@ -3073,6 +3396,69 @@ const char *flightPlanArrivalStatus() {
     return "LATE";
   }
   return "ON TIME";
+}
+
+uint16_t flightPlanProgressColor() {
+  const char *status = flightPlanArrivalStatus();
+  if (strcmp(status, "EARLY") == 0) {
+    return display->color565(0, 72, 0);
+  }
+  if (strcmp(status, "LATE") == 0 || strcmp(status, "DELAYED") == 0) {
+    return display->color565(96, 64, 0);
+  }
+  return display->color565(0, 0, 96);
+}
+
+void drawFlightPlanProgressLine() {
+  if (!flightPlanHasLiveData || flightPlanAircraft.onGround ||
+      flightPlanEtd == 0 || flightPlanEta <= flightPlanEtd) {
+    const uint16_t color = display->color565(30, 30, 30);
+    display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
+                           color);
+    /*
+    Serial.printf("Flight progress: ETD=%lu ETA=%lu status=%s color=0x%04X "
+                  "progress=0%% live=%d on_ground=%d\n",
+                  static_cast<unsigned long>(flightPlanEtd),
+                  static_cast<unsigned long>(flightPlanEta),
+                  flightPlanAeroStatus.isEmpty()
+                      ? "unknown"
+                      : flightPlanAeroStatus.c_str(),
+                  color, flightPlanHasLiveData, flightPlanAircraft.onGround);
+    */
+    return;
+  }
+
+  display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
+                         display->color565(12, 12, 12));
+  int progressWidth = 0;
+  const time_t now = time(nullptr);
+  if (now > 0) {
+    const uint64_t start = flightPlanEtd;
+    const uint64_t end = flightPlanEta;
+    const uint64_t current = static_cast<uint64_t>(now);
+    if (current >= end) {
+      progressWidth = PANEL_RES_X;
+    } else if (current > start) {
+      progressWidth = static_cast<int>(
+          (current - start) * PANEL_RES_X / (end - start));
+    }
+  }
+  const uint16_t color = flightPlanProgressColor();
+  if (progressWidth > 0) {
+    display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, progressWidth,
+                           color);
+  }
+  /*
+  Serial.printf("Flight progress: ETD=%lu ETA=%lu status=%s color=0x%04X "
+                "progress=%d%% live=%d on_ground=%d\n",
+                static_cast<unsigned long>(flightPlanEtd),
+                static_cast<unsigned long>(flightPlanEta),
+                flightPlanAeroStatus.isEmpty()
+                    ? "unknown"
+                    : flightPlanAeroStatus.c_str(),
+                color, progressWidth * 100 / PANEL_RES_X,
+                flightPlanHasLiveData, flightPlanAircraft.onGround);
+  */
 }
 
 void drawFlightPlanPositionRow(int phase) {
@@ -3177,6 +3563,8 @@ void updateFlightPlanDisplayAlternation() {
   const bool updatePosition =
       positionPhase != flightPlanLastPositionPhase || scrollingLocation;
   const bool updateStats = statsPhase != flightPlanLastStatsPhase;
+  drawFlightPlanProgressLine();
+  flightPlanLastBottomRenderMs = millis();
   if (!updatePosition && !updateStats) {
     return;
   }
@@ -3189,7 +3577,6 @@ void updateFlightPlanDisplayAlternation() {
   }
   flightPlanLastPositionPhase = positionPhase;
   flightPlanLastStatsPhase = statsPhase;
-  flightPlanLastBottomRenderMs = millis();
 }
 
 bool getCurrentFlightPlanLeg(JsonDocument &plan, JsonObjectConst &flight) {
@@ -3225,12 +3612,8 @@ void drawFlightPlanDisplay() {
                         flightPlanAircraft.isHelicopter);
   printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W,
                        FLIGHT_ROW_CALLSIGN, flightNumber, colCallsign);
-  const char *aircraftType =
-      flightPlanHasLiveData ? flightPlanAircraft.type : "WAITING";
-  printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_TYPE,
-                       aircraftType, colType);
-  display->drawFastHLine(0, FLIGHT_ROW_DIVIDER, PANEL_RES_X,
-                         display->color565(30, 30, 30));
+  drawAircraftDetailSlot();
+  drawFlightPlanProgressLine();
 
   drawFlightPlanBottomRows();
   unsigned long elapsedMs = millis() - flightPlanDisplayCycleStartedMs;
@@ -3342,7 +3725,17 @@ bool flightApiValueIsPresent(JsonVariantConst value) {
   return !value.isNull();
 }
 
-bool fetchAeroApiFlightDetails(const String &flightNumber) {
+bool fetchAeroApiFlightDetails(const String &flightNumber,
+                              bool requireValidityWindowMatch,
+                              bool *detailsFound,
+                              bool includeScheduleWindow,
+                              bool *noFlightsReturned) {
+  if (detailsFound != nullptr) {
+    *detailsFound = false;
+  }
+  if (noFlightsReturned != nullptr) {
+    *noFlightsReturned = false;
+  }
   if (config.aeroApiKey.isEmpty() || WiFi.status() != WL_CONNECTED) {
     return false;
   }
@@ -3373,7 +3766,8 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
     }
 
     HTTPClient http;
-    http.setTimeout(10000);
+    http.setConnectTimeout(3000);
+    http.setTimeout(5000);
     if (!http.begin(url)) {
       Serial.println("AeroAPI request could not be initialized");
       return false;
@@ -3398,18 +3792,14 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
     return true;
   };
 
-  if (!fetchFlights(true)) {
+  if (!fetchFlights(includeScheduleWindow)) {
     return false;
   }
   JsonArray flights = response["flights"].as<JsonArray>();
   if (flights.isNull() || flights.size() == 0) {
-    Serial.printf(
-        "AeroAPI returned no flights for %s in the schedule window; retrying without date filters\n",
-        flightNumber.c_str());
-    if (!fetchFlights(false)) {
-      return false;
+    if (noFlightsReturned != nullptr) {
+      *noFlightsReturned = true;
     }
-    flights = response["flights"].as<JsonArray>();
   }
   if (flights.isNull() || flights.size() == 0) {
     Serial.printf("AeroAPI found no itinerary data for %s\n",
@@ -3427,6 +3817,17 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
   const uint64_t MISSING_ROUTE_FIELD_PENALTY = 1ULL << 40;
   const uint64_t ROUTE_MISMATCH_PENALTY = 1ULL << 48;
   for (JsonObjectConst candidate : flights) {
+    uint32_t candidateDeparture = 0;
+    bool hasCandidateDeparture =
+        readAeroApiTimestamp(candidate["scheduled_out"], candidateDeparture) ||
+        readAeroApiTimestamp(candidate["estimated_out"], candidateDeparture);
+    if (requireValidityWindowMatch &&
+        (!hasCandidateDeparture ||
+         candidateDeparture < flightPlanStartValidity ||
+         candidateDeparture >= flightPlanEndValidity)) {
+      continue;
+    }
+
     String candidateOrigin = candidate["origin"]["code_iata"] | "";
     if (candidateOrigin.isEmpty()) {
       candidateOrigin = candidate["origin"]["code"] | "";
@@ -3465,6 +3866,15 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
       matchScore += difference;
     } else if (hasExpectedEtd) {
       matchScore += 12ULL * 60 * 60;
+    } else if (hasCandidateDeparture) {
+      time_t now = time(nullptr);
+      uint32_t nowTimestamp =
+          now > 0 && static_cast<uint64_t>(now) <= UINT32_MAX
+              ? static_cast<uint32_t>(now)
+              : flightPlanStartValidity;
+      matchScore += candidateDeparture > nowTimestamp
+                        ? candidateDeparture - nowTimestamp
+                        : nowTimestamp - candidateDeparture;
     }
     candidateTime = 0;
     if (hasExpectedEta &&
@@ -3491,6 +3901,9 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
                   flightNumber.c_str(),
                   flight.isNull() ? "not found" : "ambiguous");
     return true;
+  }
+  if (detailsFound != nullptr) {
+    *detailsFound = true;
   }
 
   String trackingCallsign = flight["ident_icao"] | "";
@@ -3565,6 +3978,81 @@ bool fetchAeroApiFlightDetails(const String &flightNumber) {
   return true;
 }
 
+uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
+                                    bool &lookupAttempted) {
+  lookupAttempted = false;
+  if (config.aeroApiKey.isEmpty()) {
+    Serial.println("Portal schedule AeroAPI enrichment skipped: API key is empty");
+    return 0;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Portal schedule AeroAPI enrichment skipped: Wi-Fi is disconnected");
+    return 0;
+  }
+
+  JsonObject flights = plan["flight_data"].as<JsonObject>();
+  uint8_t enrichedCount = 0;
+  for (uint8_t index = 0; index < flightCount; index++) {
+    char key[] = {static_cast<char>('1' + index), '\0'};
+    JsonObject storedFlight = flights[key].as<JsonObject>();
+    String flightNumber = storedFlight["flight"] | "";
+    if (storedFlight.isNull() || flightNumber.isEmpty()) {
+      Serial.printf("Portal AeroAPI enrichment skipped: flight entry %u is invalid\n",
+                    index + 1);
+      continue;
+    }
+
+    flightPlanCurrentIndex = index;
+    flightPlanOrigin = storedFlight["origin"] | "";
+    flightPlanDestination = storedFlight["destination"] | "";
+    flightPlanEta = 0;
+    flightPlanEtd = 0;
+    flightPlanScheduledEta = 0;
+    flightPlanEstimatedEta = 0;
+    readUnixTimestamp(storedFlight["eta"], flightPlanEta);
+    flightPlanScheduledEta = flightPlanEta;
+    readUnixTimestamp(storedFlight["etd"], flightPlanEtd);
+    flightPlanTrackingCallsign = "";
+    flightPlanTrackingCallsignResolved = false;
+    flightPlanAeroStatus = "";
+    flightPlanAeroApiLanded = false;
+
+    bool detailsFound = false;
+    lookupAttempted = true;
+    bool requestSucceeded =
+        fetchAeroApiFlightDetails(flightNumber, true, &detailsFound);
+    if (!requestSucceeded) {
+      Serial.printf("Portal AeroAPI enrichment request failed for %s\n",
+                    flightNumber.c_str());
+    }
+
+    if (detailsFound) {
+      if (!flightPlanOrigin.isEmpty()) {
+        storedFlight["origin"] = flightPlanOrigin;
+      }
+      if (!flightPlanDestination.isEmpty()) {
+        storedFlight["destination"] = flightPlanDestination;
+      }
+      if (flightPlanEta > 0) {
+        storedFlight["eta"] = flightPlanEta;
+      }
+      if (flightPlanEtd > 0) {
+        storedFlight["etd"] = flightPlanEtd;
+      }
+      enrichedCount++;
+    }
+    flightPlanResolvedCallsigns[index] = flightPlanTrackingCallsign;
+    flightPlanAeroStatuses[index] = flightPlanAeroStatus;
+    flightPlanScheduledEtas[index] = flightPlanScheduledEta;
+    flightPlanEstimatedEtas[index] = flightPlanEstimatedEta;
+    flightPlanAeroApiLandedByLeg[index] = flightPlanAeroApiLanded;
+  }
+
+  flightPlanCurrentIndex = 0;
+  resetCurrentFlightPlanLeg();
+  return enrichedCount;
+}
+
 bool fetchFlightPlanLocation(float latitude, float longitude) {
   if (!isfinite(latitude) || !isfinite(longitude) || latitude < -90.0f ||
       latitude > 90.0f || longitude < -180.0f || longitude > 180.0f ||
@@ -3586,12 +4074,16 @@ bool fetchFlightPlanLocation(float latitude, float longitude) {
   url += String(longitude, 2);
 
   HTTPClient http;
-  http.setTimeout(5000);
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
   if (!http.begin(url)) {
     Serial.println("OpenStreetMap reverse-geocoding request could not be initialized");
     return false;
   }
-  http.setUserAgent("ESP32-HUB75-Flight-Radar/1.0");
+  http.setUserAgent(
+      "ESP32-HUB75-Flight-Radar/1.0 (+https://github.com/bdubyalock/ESP32-HUB75-Flight-Radar)");
+  http.addHeader("Referer",
+                 "https://github.com/bdubyalock/ESP32-HUB75-Flight-Radar");
   http.addHeader("Accept", "application/json");
   int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
@@ -3648,7 +4140,8 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
   String url = "https://api.adsb.lol/v2/callsign/";
   url += encodeUrlPathSegment(flightNumber);
   HTTPClient http;
-  http.setTimeout(10000);
+  http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
   if (!http.begin(url)) {
     Serial.println("ADSB.lol flight lookup could not be initialized");
     return false;
@@ -3684,26 +4177,13 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
       continue;
     }
 
+    if (flightPlanHasLiveData && snapshot.icao24[0] != '\0' &&
+        strcasecmp(snapshot.icao24, flightPlanAircraft.icao24) == 0) {
+      copyStringField(snapshot.squawk, sizeof(snapshot.squawk),
+                      flightPlanAircraft.squawk);
+    }
     flightPlanAircraft = snapshot;
     flightPlanHasLiveData = true;
-    if (snapshot.hasPosition) {
-      fetchFlightPlanLocation(snapshot.latitude, snapshot.longitude);
-    }
-    bool routeRetryDue =
-        flightPlanLastRouteLookupMs == 0 ||
-        millis() - flightPlanLastRouteLookupMs >= FLIGHT_PLAN_ROUTE_RETRY_MS;
-    if (!flightPlanRouteLookupAttempted || routeRetryDue) {
-      flightPlanRouteLookupAttempted = true;
-      flightPlanLastRouteLookupMs = millis();
-      if (fetchRoute(flightNumber)) {
-        if (flightPlanOrigin.isEmpty()) {
-          flightPlanOrigin = routeOrigin;
-        }
-        if (flightPlanDestination.isEmpty()) {
-          flightPlanDestination = routeDest;
-        }
-      }
-    }
     if (!snapshot.onGround) {
       flightPlanLegObservedAirborne = true;
       flightPlanAdsbLanded = false;
@@ -3726,7 +4206,115 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
   return true;
 }
 
+void updateFlightPlanDetails() {
+  if (operatingMode != MODE_FLIGHT_PLAN || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (flightPlanAeroApiLookupPending) {
+    JsonDocument plan;
+    JsonObjectConst flight;
+    if (!getCurrentFlightPlanLeg(plan, flight)) {
+      Serial.println("AeroAPI lookup skipped: active flight-plan leg is invalid");
+      flightPlanAeroApiLookupPending = false;
+      return;
+    }
+    String flightNumber = flight["flight"] | "";
+    if (flightNumber.isEmpty()) {
+      Serial.println("AeroAPI lookup skipped: active callsign is empty");
+      flightPlanAeroApiLookupPending = false;
+      return;
+    }
+
+    bool noFlightsReturned = false;
+    bool lookupSucceeded =
+        fetchAeroApiFlightDetails(flightNumber, false, nullptr, true,
+                                  &noFlightsReturned);
+    flightPlanAeroApiLookupPending = false;
+    flightPlanAeroApiFallbackPending =
+        lookupSucceeded && noFlightsReturned;
+    if (flightPlanAeroApiFallbackPending) {
+      Serial.printf(
+          "AeroAPI schedule lookup found no flights for %s; deferring unfiltered lookup to a later loop iteration\n",
+          flightNumber.c_str());
+    }
+    aeroApiLastPollMs = millis();
+    return;
+  }
+
+  if (flightPlanAeroApiFallbackPending) {
+    JsonDocument plan;
+    JsonObjectConst flight;
+    if (!getCurrentFlightPlanLeg(plan, flight)) {
+      Serial.println("AeroAPI fallback skipped: active flight-plan leg is invalid");
+      flightPlanAeroApiFallbackPending = false;
+      return;
+    }
+    String flightNumber = flight["flight"] | "";
+    if (flightNumber.isEmpty()) {
+      Serial.println("AeroAPI fallback skipped: active callsign is empty");
+      flightPlanAeroApiFallbackPending = false;
+      return;
+    }
+
+    if (!fetchAeroApiFlightDetails(flightNumber, false, nullptr, false)) {
+      Serial.printf("AeroAPI fallback request failed for %s\n",
+                    flightNumber.c_str());
+    }
+    flightPlanAeroApiFallbackPending = false;
+    aeroApiLastPollMs = millis();
+    return;
+  }
+
+  if (!flightPlanHasLiveData) {
+    return;
+  }
+
+  const unsigned long nowMs = millis();
+  const bool openSkyDue =
+      !openSkyFetchAttempted ||
+      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+  if (openSkyDue) {
+    fetchOpenSkySquawks();
+    flightPlanDisplayDirty = true;
+    return;
+  }
+
+  if (flightPlanAircraft.hasPosition &&
+      (flightPlanLastLocationLookupMs == 0 ||
+       nowMs - flightPlanLastLocationLookupMs >=
+           FLIGHT_PLAN_LOCATION_LOOKUP_MS)) {
+    fetchFlightPlanLocation(flightPlanAircraft.latitude,
+                            flightPlanAircraft.longitude);
+    return;
+  }
+
+  const bool routeLookupDue =
+      !flightPlanRouteLookupAttempted ||
+      flightPlanLastRouteLookupMs == 0 ||
+      nowMs - flightPlanLastRouteLookupMs >= FLIGHT_PLAN_ROUTE_RETRY_MS;
+  if (!routeLookupDue) {
+    return;
+  }
+
+  flightPlanRouteLookupAttempted = true;
+  flightPlanLastRouteLookupMs = nowMs;
+  if (fetchRoute(flightPlanTrackingCallsign.isEmpty()
+                     ? flightPlanAircraft.callsign
+                     : flightPlanTrackingCallsign)) {
+    if (flightPlanOrigin.isEmpty()) {
+      flightPlanOrigin = routeOrigin;
+    }
+    if (flightPlanDestination.isEmpty()) {
+      flightPlanDestination = routeDest;
+    }
+    flightPlanDisplayDirty = true;
+  }
+}
+
 void resetCurrentFlightPlanLeg() {
+  showSquawkInTypeSlot = false;
+  typeSlotStartedMs = millis();
   flightPlanLegObservedAirborne = false;
   flightPlanHasLiveData = false;
   flightPlanAeroApiLanded = false;
@@ -3735,6 +4323,8 @@ void resetCurrentFlightPlanLeg() {
   flightPlanLandingHoldStartedMs = 0;
   flightPlanTrackingCallsignResolved = false;
   flightPlanRouteLookupAttempted = false;
+  flightPlanAeroApiLookupPending = false;
+  flightPlanAeroApiFallbackPending = false;
   flightPlanLastRouteLookupMs = 0;
   flightPlanEta = 0;
   flightPlanEtd = 0;
@@ -3743,8 +4333,20 @@ void resetCurrentFlightPlanLeg() {
   flightPlanOrigin = "";
   flightPlanDestination = "";
   flightPlanTrackingCallsign = "";
+  if (flightPlanCurrentIndex < 4) {
+    flightPlanTrackingCallsign =
+        flightPlanResolvedCallsigns[flightPlanCurrentIndex];
+    flightPlanTrackingCallsignResolved =
+        !flightPlanTrackingCallsign.isEmpty();
+    flightPlanScheduledEta =
+        flightPlanScheduledEtas[flightPlanCurrentIndex];
+    flightPlanEstimatedEta =
+        flightPlanEstimatedEtas[flightPlanCurrentIndex];
+    flightPlanAeroStatus = flightPlanAeroStatuses[flightPlanCurrentIndex];
+    flightPlanAeroApiLanded =
+        flightPlanAeroApiLandedByLeg[flightPlanCurrentIndex];
+  }
   flightPlanLocation = "LOCATION UNKNOWN";
-  flightPlanAeroStatus = "";
   flightPlanLastPollMs = 0;
   aeroApiLastPollMs = 0;
   flightPlanLastLocationLookupMs = 0;
@@ -3836,38 +4438,20 @@ void pollFlightPlan() {
                   trackingCallsign.c_str());
   }
 
+  unsigned long nowMs = millis();
+  if (!config.aeroApiKey.isEmpty() &&
+      !flightPlanAeroApiLookupPending &&
+      !flightPlanAeroApiFallbackPending &&
+      (aeroApiLastPollMs == 0 ||
+       nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
+    Serial.printf("Scheduling periodic AeroAPI lookup for %s\n",
+                  flightNumber.c_str());
+    flightPlanAeroApiLookupPending = true;
+  }
+
   if (flightPlanAeroApiLanded || flightPlanAdsbLanded) {
     beginFlightPlanLandingHold(flightNumber);
     return;
-  }
-
-  bool routeMissing = flightPlanOrigin.isEmpty() ||
-                      flightPlanDestination.isEmpty();
-  bool routeLookupCouldNotProvideRoute =
-      routeMissing &&
-      (flightPlanRouteLookupAttempted || !flightPlanHasLiveData);
-  bool etaMissing = flightPlanEta == 0;
-  bool aeroApiDataNeeded = !flightPlanTrackingCallsignResolved ||
-                           routeLookupCouldNotProvideRoute || etaMissing;
-  unsigned long nowMs = millis();
-  if (!flightPlanHasLiveData && !config.aeroApiKey.isEmpty() &&
-      aeroApiDataNeeded &&
-      (aeroApiLastPollMs == 0 ||
-       nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
-    Serial.printf("AeroAPI lookup needed for %s%s%s%s\n",
-                  flightNumber.c_str(),
-                  flightPlanTrackingCallsignResolved ? "" : ": tracking callsign",
-                  etaMissing ? (flightPlanTrackingCallsignResolved
-                                    ? ": ETA missing"
-                                    : ", ETA missing")
-                             : "",
-                  routeLookupCouldNotProvideRoute
-                      ? ((etaMissing || !flightPlanTrackingCallsignResolved)
-                             ? ", route lookup incomplete"
-                             : ": route lookup incomplete")
-                      : "");
-    fetchAeroApiFlightDetails(flightNumber);
-    aeroApiLastPollMs = millis();
   }
 
   time_t now = time(nullptr);
@@ -3931,37 +4515,186 @@ bool fetchRoute(const String &callsign) {
   String body;
   serializeJson(req, body);
 
-  for (int attempt = 1; attempt <= ROUTE_FETCH_RETRIES; attempt++) {
-    HTTPClient http;
-    http.begin("https://flightroutes.opensky-network.org/api/routeset");
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(8000);
+  HTTPClient http;
+  http.setConnectTimeout(ROUTE_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(ROUTE_FETCH_TIMEOUT_MS);
+  if (!http.begin("https://flightroutes.opensky-network.org/api/routeset")) {
+    Serial.println("Route request could not be initialized");
+    return false;
+  }
 
-    int statusCode = http.POST(body);
-    if (statusCode != HTTP_CODE_OK && statusCode != HTTP_CODE_CREATED) {
-      Serial.printf("Route request failed for %s: HTTP %d (try %d/%d)\n",
-                    callsign.c_str(), statusCode, attempt, ROUTE_FETCH_RETRIES);
-      http.end();
-      if (attempt < ROUTE_FETCH_RETRIES) {
-        delay(ROUTE_FETCH_DELAY_MS * attempt);
-      }
+  http.addHeader("Content-Type", "application/json");
+  int statusCode = http.POST(body);
+  if (statusCode != HTTP_CODE_OK && statusCode != HTTP_CODE_CREATED) {
+    Serial.printf("Route request failed for %s: HTTP %d\n",
+                  callsign.c_str(), statusCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+  if (parseRouteResponse(payload, callsign)) {
+    return true;
+  }
+
+  Serial.printf("Route lookup failed for %s\n", callsign.c_str());
+  return false;
+}
+
+bool fetchOpenSkySquawks() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+  if (openSkyFetchAttempted &&
+      millis() - lastOpenSkyFetchMs < OPEN_SKY_FETCH_INTERVAL_MS) {
+    return false;
+  }
+
+  openSkyFetchAttempted = true;
+  lastOpenSkyFetchMs = millis();
+
+  const double radiusKm = config.searchRadius * 1.852;
+  const double latitudeExtent = radiusKm / 111.32;
+  const double cosineLatitude =
+      cos(config.latitude * 0.017453292519943295);
+  const double longitudeExtent =
+      fabs(cosineLatitude) < 0.01
+          ? 180.0
+          : fmin(180.0, radiusKm / (111.32 * fabs(cosineLatitude)));
+  const double minLatitude = fmax(-90.0, config.latitude - latitudeExtent);
+  const double maxLatitude = fmin(90.0, config.latitude + latitudeExtent);
+  const double minLongitude =
+      fmax(-180.0, config.longitude - longitudeExtent);
+  const double maxLongitude =
+      fmin(180.0, config.longitude + longitudeExtent);
+
+  String url = "https://opensky-network.org/api/states/all?lamin=";
+  url += String(minLatitude, 6);
+  url += "&lomin=";
+  url += String(minLongitude, 6);
+  url += "&lamax=";
+  url += String(maxLatitude, 6);
+  url += "&lomax=";
+  url += String(maxLongitude, 6);
+
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
+  if (!http.begin(url)) {
+    Serial.println("OpenSky squawk request could not be initialized");
+    return false;
+  }
+
+  int statusCode = http.GET();
+  if (statusCode != HTTP_CODE_OK) {
+    Serial.printf("OpenSky squawk request failed: HTTP %d\n", statusCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+  JsonDocument response;
+  DeserializationError error = deserializeJson(response, payload);
+  payload = "";
+  if (error) {
+    Serial.printf("OpenSky state response parse failed: %s\n",
+                  error.c_str());
+    return false;
+  }
+
+  JsonArray states = response["states"].as<JsonArray>();
+  for (int i = 0; i < trackedAircraftCount; i++) {
+    trackedAircraft[i].squawk[0] = '\0';
+  }
+  if (flightPlanHasLiveData) {
+    flightPlanAircraft.squawk[0] = '\0';
+  }
+
+  int matchedAircraft = 0;
+  for (JsonArray state : states) {
+    if (state.size() <= 14) {
       continue;
     }
 
-    String payload = http.getString();
-    http.end();
-
-    if (parseRouteResponse(payload, callsign)) {
-      return true;
+    const char *icao24 = state[0].as<const char *>();
+    const char *squawk = state[14].as<const char *>();
+    if (icao24 == nullptr || strlen(icao24) != 6 ||
+        squawk == nullptr || strlen(squawk) != 4) {
+      continue;
+    }
+    bool validSquawk = true;
+    for (int i = 0; i < 4; i++) {
+      if (squawk[i] < '0' || squawk[i] > '9') {
+        validSquawk = false;
+        break;
+      }
+    }
+    if (!validSquawk) {
+      continue;
     }
 
-    if (attempt < ROUTE_FETCH_RETRIES) {
-      delay(ROUTE_FETCH_DELAY_MS * attempt);
+    for (int i = 0; i < trackedAircraftCount; i++) {
+      if (trackedAircraft[i].icao24[0] != '\0' &&
+          strcasecmp(trackedAircraft[i].icao24, icao24) == 0) {
+        copyStringField(trackedAircraft[i].squawk,
+                        sizeof(trackedAircraft[i].squawk), squawk);
+        matchedAircraft++;
+      }
+    }
+    if (flightPlanHasLiveData && flightPlanAircraft.icao24[0] != '\0' &&
+        strcasecmp(flightPlanAircraft.icao24, icao24) == 0) {
+      copyStringField(flightPlanAircraft.squawk,
+                      sizeof(flightPlanAircraft.squawk), squawk);
+      matchedAircraft++;
     }
   }
 
-  Serial.printf("Route lookup gave up for %s\n", callsign.c_str());
-  return false;
+  if (trackedAircraftCount > 0) {
+    applyTrackedAircraft(displayAircraftIndex);
+  }
+  showSquawkInTypeSlot = false;
+  typeSlotStartedMs = millis();
+  Serial.printf("OpenSky matched squawks for %d aircraft\n", matchedAircraft);
+  return true;
+}
+
+void updateOverheadDetails() {
+  if (operatingMode != MODE_OVERHEAD_FLIGHTS || trackedAircraftCount == 0 ||
+      nearestCallsign == "NONE" || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  const unsigned long nowMs = millis();
+  const bool openSkyDue =
+      !openSkyFetchAttempted ||
+      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+  if (openSkyDue) {
+    if (fetchOpenSkySquawks()) {
+      showFlight();
+    }
+    return;
+  }
+
+  if (hasRoute && nearestCallsign == cachedRouteCallsign) {
+    return;
+  }
+
+  const bool routeLookupDue =
+      nearestCallsign != overheadRouteLookupCallsign ||
+      nowMs - overheadRouteLookupStartedMs >=
+          ROUTE_LOOKUP_RETRY_INTERVAL_MS;
+  if (!routeLookupDue) {
+    return;
+  }
+
+  overheadRouteLookupCallsign = nearestCallsign;
+  overheadRouteLookupStartedMs = nowMs;
+  if (fetchRoute(nearestCallsign)) {
+    resetAircraftDisplayTimer();
+    showFlight();
+  }
 }
 
 bool fetchAircraftList() {
@@ -3978,40 +4711,32 @@ bool fetchAircraftList() {
   const int radiusKm = static_cast<int>(lround(config.searchRadius * 1.852));
   url += String(radiusKm);
 
-  String payload;
-  int statusCode = 0;
-
-  for (int attempt = 1; attempt <= FLIGHT_FETCH_RETRIES; attempt++) {
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(10000);
-    http.setUserAgent("Mozilla/5.0");
-    http.addHeader("Accept", "application/json");
-
-    statusCode = http.GET();
-    if (statusCode != HTTP_CODE_OK) {
-      Serial.printf("Flight request failed at URL %s: HTTP %d (try %d/%d)\n", url.c_str(),
-                    statusCode, attempt, FLIGHT_FETCH_RETRIES);
-       Serial.print("WiFi IP: ");
-      Serial.println(WiFi.localIP());
-      http.end();
-      if (attempt < FLIGHT_FETCH_RETRIES) {
-        delay(500 * attempt);
-      }
-      continue;
-    }
-
-    payload = http.getString();
-    http.end();
-    break;
+  HTTPClient http;
+  http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
+  http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
+  if (!http.begin(url)) {
+    lastApiParseFailed = false;
+    lastApiHttpCode = -1;
+    Serial.println("ADSB.lol aircraft-list request could not be initialized");
+    return false;
   }
+  http.setUserAgent("Mozilla/5.0");
+  http.addHeader("Accept", "application/json");
 
+  const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
+    Serial.printf("Flight request failed at URL %s: HTTP %d\n",
+                  url.c_str(), statusCode);
+    Serial.print("WiFi IP: ");
+    Serial.println(WiFi.localIP());
+    http.end();
     lastApiParseFailed = false;
     lastApiHttpCode = statusCode;
     return false;
   }
 
+  String payload = http.getString();
+  http.end();
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload);
   payload = "";
@@ -4026,12 +4751,23 @@ bool fetchAircraftList() {
   lastApiHttpCode = 0;
 
   JsonArray aircraft = doc["ac"].as<JsonArray>();
+  const int previousAircraftCount = trackedAircraftCount;
+  AircraftSnapshot previousAircraft[MAX_TRACKED_AIRCRAFT];
+  memcpy(previousAircraft, trackedAircraft, sizeof(previousAircraft));
   clearTrackedAircraft();
 
   if (!aircraft.isNull()) {
     for (JsonObject plane : aircraft) {
       AircraftSnapshot snap;
       if (parsePlaneSnapshot(plane, snap)) {
+        for (int i = 0; i < previousAircraftCount; i++) {
+          if (snap.icao24[0] != '\0' &&
+              strcasecmp(snap.icao24, previousAircraft[i].icao24) == 0) {
+            copyStringField(snap.squawk, sizeof(snap.squawk),
+                            previousAircraft[i].squawk);
+            break;
+          }
+        }
         insertTrackedAircraft(snap);
       }
     }
@@ -4047,7 +4783,6 @@ bool fetchAircraftList() {
 
   displayAircraftIndex = 0;
   applyTrackedAircraft(0);
-
   if (nearestCallsign != cachedRouteCallsign) {
     clearRoute();
   }
@@ -4066,8 +4801,8 @@ bool fetchAircraftList() {
 
 void refreshFlightDisplay() {
   hasFlightData = true;
-  showCallsignInTypeSlot = false;
-  callsignTypeSwapPending = false;
+  showSquawkInTypeSlot = false;
+  typeSlotStartedMs = millis();
 
   // No aircraft in range: let the loop draw the screensaver instead of an
   // empty flight card.
@@ -4081,15 +4816,6 @@ void refreshFlightDisplay() {
   }
 
   showFlight();
-
-  if (fetchRoute(nearestCallsign)) {
-    resetAircraftDisplayTimer();
-    if (REFRESH_INTERVAL_MS > 1000) {
-      typeSlotStartedMs = millis();
-      callsignTypeSwapPending = true;
-    }
-    showFlight();
-  }
 }
 
 void handleFlightFetchResult(bool ok) {
@@ -4162,14 +4888,14 @@ bool beginTimeSync(uint32_t waitMs) {
 }
 
 void updateTimeSync() {
-  if (ntpTimeReceived) {
-    return;
-  }
   if (time(nullptr) >= VALID_SYSTEM_TIME_EPOCH) {
+    if (!ntpTimeReceived) {
+      Serial.println("NTP time received");
+    }
     ntpTimeReceived = true;
-    Serial.println("NTP time received");
     return;
   }
+  ntpTimeReceived = false;
   if (WiFi.status() != WL_CONNECTED ||
       (ntpAttemptMade &&
        millis() - lastNtpAttemptMs < NTP_RETRY_INTERVAL_MS)) {
@@ -4375,16 +5101,23 @@ void loop() {
   }
 
   if (operatingMode == MODE_FLIGHT_PLAN) {
+    bool flightPlanPollAttemptedThisLoop = false;
     if (flightPlanLastPollMs == 0 ||
         millis() - flightPlanLastPollMs >= FLIGHT_PLAN_POLL_INTERVAL_MS) {
       pollFlightPlan();
+      flightPlanPollAttemptedThisLoop = true;
       updateOperatingModeFromFlightPlan();
+    }
+    if (operatingMode == MODE_FLIGHT_PLAN &&
+        !flightPlanPollAttemptedThisLoop) {
+      updateFlightPlanDetails();
     }
     if (operatingMode == MODE_FLIGHT_PLAN && flightPlanDisplayDirty) {
       drawFlightPlanDisplay();
       flightPlanDisplayDirty = false;
     }
     if (operatingMode == MODE_FLIGHT_PLAN) {
+      updateAircraftDetailSlotIfNeeded();
       updateFlightPlanDisplayAlternation();
     }
     if (operatingMode == MODE_FLIGHT_PLAN) {
@@ -4397,11 +5130,19 @@ void loop() {
   // display (via activeBrightness); they no longer pause polling, so live
   // traffic is shown whenever it exists.
   unsigned long fetchInterval =
-      hasFlightData ? REFRESH_INTERVAL_MS : FETCH_RETRY_ON_FAIL_MS;
+      hasFlightData && consecutiveFetchFailures == 0
+          ? REFRESH_INTERVAL_MS
+          : FETCH_RETRY_ON_FAIL_MS;
+  bool aircraftFetchAttemptedThisLoop = false;
   if (lastFetchMs == 0 || millis() - lastFetchMs >= fetchInterval) {
     handleFlightFetchResult(fetchAircraftList());
     lastFetchMs = millis();
     lastDisplayCycleMs = millis();
+    aircraftFetchAttemptedThisLoop = true;
+  }
+
+  if (!aircraftFetchAttemptedThisLoop) {
+    updateOverheadDetails();
   }
 
   if (configAccessPointActive) {
@@ -4422,7 +5163,7 @@ void loop() {
       lastDisplayCycleMs = millis();
       cycleDisplayedAircraft();
     } else {
-      updateAircraftTypeSlotIfNeeded();
+      updateAircraftDetailSlotIfNeeded();
       updateBottomPhaseIfNeeded();
     }
     delay(40);
