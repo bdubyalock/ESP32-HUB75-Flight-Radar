@@ -146,10 +146,12 @@ later loop iteration and ranks results using the route and schedule times.
 The schedule-window lookup itself is also deferred until after the ADS-B poll,
 so each background AeroAPI query runs in its own loop pass.
 Each background AeroAPI request has a 3-second connection timeout and a
-5-second request timeout. Portal submission enrichment only accepts flights
-whose departure is inside the submitted validity window.
-Each poll first checks ADS-B for the scheduled or already-resolved callsign;
-when that flight is present, no AeroAPI request is made. A final leg observed
+5-second request timeout. While a flight plan is active, AeroAPI is queried
+at least once every ten minutes even when ADS-B is tracking the aircraft, so
+estimated arrival times and status can be refreshed. Portal submission
+enrichment only accepts flights whose departure is inside the submitted
+validity window. Each flight-plan poll checks ADS-B for the scheduled or
+already-resolved callsign. A final leg observed
 on the ground after being airborne, or on the ground at/after its ETA, ends
 schedule mode even if ADS-B subsequently stops reporting it. After landing is
 detected (or the ETA fallback determines the leg is complete), the display
@@ -157,7 +159,9 @@ shows `LANDED` for at least five minutes before advancing to the next leg or
 returning to overhead mode.
 MQTT uses secure WebSockets (`wss://`) with certificate validation against
 the Let's Encrypt ISRG Root X2 CA. The device waits for NTP time before
-connecting so that broker certificate validity can be checked.
+connecting so that broker certificate validity can be checked. If system time
+is still invalid while Wi-Fi is connected, NTP synchronization is retried at
+most once every five minutes.
 
 ## Configuration
 

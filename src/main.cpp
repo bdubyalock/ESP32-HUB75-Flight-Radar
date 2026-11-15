@@ -124,7 +124,7 @@ const unsigned long OPEN_SKY_FETCH_INTERVAL_MS = 150000;
 const unsigned long ROUTE_LOOKUP_RETRY_INTERVAL_MS = 60000;
 const unsigned long AIRCRAFT_DETAIL_PHASE_MS = 5000;
 const unsigned long FLIGHT_PLAN_POLL_INTERVAL_MS = 15000;
-const unsigned long AEROAPI_RETRY_INTERVAL_MS = 300000;
+const unsigned long AEROAPI_RETRY_INTERVAL_MS = 10UL * 60UL * 1000UL;
 const unsigned long FLIGHT_PLAN_ETA_GRACE_SECONDS = 1800;
 const unsigned long FLIGHT_PLAN_LANDED_HOLD_MS = 5UL * 60 * 1000;
 const unsigned long FLIGHT_PLAN_ROUTE_RETRY_MS = 300000;
@@ -4190,11 +4190,6 @@ void updateFlightPlanDetails() {
   }
 
   if (flightPlanAeroApiLookupPending) {
-    if (flightPlanHasLiveData) {
-      flightPlanAeroApiLookupPending = false;
-      return;
-    }
-
     JsonDocument plan;
     JsonObjectConst flight;
     if (!getCurrentFlightPlanLeg(plan, flight)) {
@@ -4226,11 +4221,6 @@ void updateFlightPlanDetails() {
   }
 
   if (flightPlanAeroApiFallbackPending) {
-    if (flightPlanHasLiveData) {
-      flightPlanAeroApiFallbackPending = false;
-      return;
-    }
-
     JsonDocument plan;
     JsonObjectConst flight;
     if (!getCurrentFlightPlanLeg(plan, flight)) {
@@ -4426,39 +4416,20 @@ void pollFlightPlan() {
                   trackingCallsign.c_str());
   }
 
+  unsigned long nowMs = millis();
+  if (!config.aeroApiKey.isEmpty() &&
+      !flightPlanAeroApiLookupPending &&
+      !flightPlanAeroApiFallbackPending &&
+      (aeroApiLastPollMs == 0 ||
+       nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
+    Serial.printf("Scheduling periodic AeroAPI lookup for %s\n",
+                  flightNumber.c_str());
+    flightPlanAeroApiLookupPending = true;
+  }
+
   if (flightPlanAeroApiLanded || flightPlanAdsbLanded) {
     beginFlightPlanLandingHold(flightNumber);
     return;
-  }
-
-  bool routeMissing = flightPlanOrigin.isEmpty() ||
-                      flightPlanDestination.isEmpty();
-  bool routeLookupCouldNotProvideRoute =
-      routeMissing &&
-      (flightPlanRouteLookupAttempted || !flightPlanHasLiveData);
-  bool etaMissing = flightPlanEta == 0;
-  bool aeroApiDataNeeded = !flightPlanTrackingCallsignResolved ||
-                           routeLookupCouldNotProvideRoute || etaMissing;
-  unsigned long nowMs = millis();
-  if (!flightPlanHasLiveData && !config.aeroApiKey.isEmpty() &&
-      !flightPlanAeroApiLookupPending &&
-      !flightPlanAeroApiFallbackPending &&
-      aeroApiDataNeeded &&
-      (aeroApiLastPollMs == 0 ||
-       nowMs - aeroApiLastPollMs >= AEROAPI_RETRY_INTERVAL_MS)) {
-    Serial.printf("AeroAPI lookup needed for %s%s%s%s\n",
-                  flightNumber.c_str(),
-                  flightPlanTrackingCallsignResolved ? "" : ": tracking callsign",
-                  etaMissing ? (flightPlanTrackingCallsignResolved
-                                    ? ": ETA missing"
-                                    : ", ETA missing")
-                             : "",
-                  routeLookupCouldNotProvideRoute
-                      ? ((etaMissing || !flightPlanTrackingCallsignResolved)
-                             ? ", route lookup incomplete"
-                             : ": route lookup incomplete")
-                      : "");
-    flightPlanAeroApiLookupPending = true;
   }
 
   time_t now = time(nullptr);
@@ -4895,14 +4866,14 @@ bool beginTimeSync(uint32_t waitMs) {
 }
 
 void updateTimeSync() {
-  if (ntpTimeReceived) {
-    return;
-  }
   if (time(nullptr) >= VALID_SYSTEM_TIME_EPOCH) {
+    if (!ntpTimeReceived) {
+      Serial.println("NTP time received");
+    }
     ntpTimeReceived = true;
-    Serial.println("NTP time received");
     return;
   }
+  ntpTimeReceived = false;
   if (WiFi.status() != WL_CONNECTED ||
       (ntpAttemptMade &&
        millis() - lastNtpAttemptMs < NTP_RETRY_INTERVAL_MS)) {
