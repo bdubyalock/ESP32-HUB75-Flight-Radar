@@ -166,6 +166,7 @@ String flightPlanJson;
 String lastMqttFlightPlanJson;
 bool hasLastMqttFlightPlan = false;
 bool portalClearSuppressesUnchangedMqtt = false;
+bool portalFlightPlanHasPriority = false;
 uint8_t flightPlanCount = 0;
 uint32_t flightPlanStartValidity = 0;
 uint32_t flightPlanEndValidity = 0;
@@ -964,6 +965,28 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   }
 
   if (source == FLIGHT_PLAN_FROM_MQTT) {
+    const time_t now = time(nullptr);
+    const bool landingHoldActive =
+        flightPlanLandingHoldActive &&
+        millis() - flightPlanLandingHoldStartedMs <
+            FLIGHT_PLAN_LANDED_HOLD_MS;
+    const bool portalPlanStillActive =
+        portalFlightPlanHasPriority && flightPlanCount > 0 &&
+        !flightPlanCompleted &&
+        (now < VALID_SYSTEM_TIME_EPOCH ||
+         static_cast<uint64_t>(now) < flightPlanEndValidity ||
+         landingHoldActive);
+    if (portalPlanStillActive) {
+      Serial.println(
+          "Ignoring MQTT flight plan while a portal flight plan has priority");
+      response["success"] = true;
+      response["ignored"] = true;
+      response["message"] = "A portal flight plan has priority.";
+      response["storedIn"] = "RAM";
+      response["flightCount"] = flightPlanCount;
+      return 200;
+    }
+
     bool unchangedMqttPlan =
         hasLastMqttFlightPlan &&
         flightPlansEqual(lastMqttFlightPlanJson, serialized, false);
@@ -979,7 +1002,9 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
     lastMqttFlightPlanJson = serialized;
     hasLastMqttFlightPlan = true;
     portalClearSuppressesUnchangedMqtt = false;
+    portalFlightPlanHasPriority = false;
   } else {
+    portalFlightPlanHasPriority = storedFlightCount > 0;
     portalClearSuppressesUnchangedMqtt =
         storedFlightCount == 0 && hasLastMqttFlightPlan;
   }
@@ -1246,8 +1271,12 @@ void processMqttPublish(const uint8_t *packet, size_t packetLength,
         int statusCode =
             storeFlightPlan(request, response, FLIGHT_PLAN_FROM_MQTT);
         if (statusCode == 200) {
-          Serial.printf("MQTT flight plan received: %u flight(s)\n",
-                        flightPlanCount);
+          if (response["ignored"] | false) {
+            Serial.println("MQTT flight plan ignored: portal plan has priority");
+          } else {
+            Serial.printf("MQTT flight plan received: %u flight(s)\n",
+                          flightPlanCount);
+          }
         } else {
           Serial.printf("MQTT flight plan rejected: %s\n",
                         response["message"] | "invalid payload");
@@ -2386,12 +2415,12 @@ void drawFedexLogo(int x, int y) {
       "PPPPPPPPPPPPPPPPPPP",
       "PPPPPPPPPPPPPPPPPPP",
       "PPPPPPPPPPPPPPPPPPP",
-      "PWWWPWWWPDDPPOOOPPP",
-      "PWPPPWPPPDPDPOPPPPP",
-      "PWWPPWWWPDPDPOOOOPO",
-      "PWPPPWPPPDPDPOPPPOP",
-      "PWPPPWWWpDDPPOOOOPO",
       "PPPPPPPPPPPPPPPPPPP",
+      "PWWWPWWWPWWPPOOOPPP",
+      "PWPPPWPPPWPWPOPPPPP",
+      "PWWPPWWWPWPWPOOOOPO",
+      "PWPPPWPPPWPWPOPPPOP",
+      "PWPPPWWWpWWPPOOOOPO",
       "PPPPPPPPPPPPPPPPPPP",
       "PPPPPPPPPPPPPPPPPPP",
       "PPPPPPPPPPPPPPPPPPP",

@@ -118,8 +118,11 @@ CONFIGURATION panel. The username is shown as plain text; the password stays
 write-only. Both are stored with the other settings in ESP32 NVS. A
 flight-plan message must use the same `flight_data` and `validity` JSON shape
 as the portal and may contain up to four consecutive flight entries.
-After a portal clear, repeated MQTT messages matching the last accepted MQTT
-schedule are ignored; a changed MQTT schedule is accepted.
+An active flight plan submitted through the portal takes priority over MQTT:
+MQTT updates, including clears, are ignored until the portal plan is cleared,
+completed, or its validity window expires. After a portal clear, repeated
+MQTT messages matching the last accepted MQTT schedule are ignored; a changed
+MQTT schedule is accepted.
 The display confirms changed schedules for five seconds; resubmitting an
 unchanged schedule does not interrupt tracking or show another confirmation.
 The display also shows a completion notice when schedule tracking returns to
