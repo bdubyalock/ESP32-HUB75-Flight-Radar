@@ -235,9 +235,9 @@ after 10 seconds instead of blocking the main loop with multiple retries.
 ## Roadmap
 
 - [ ] Radar-style map view on the matrix
-- [ ] Cycle through multiple nearby aircraft
-- [ ] Web configuration UI
-- [ ] Aircraft type and route details
+- [X] Cycle through multiple nearby aircraft
+- [X] Web configuration UI
+- [X] Aircraft type and route details
 
 ## License
 

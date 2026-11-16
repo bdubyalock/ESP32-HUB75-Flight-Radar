@@ -3906,7 +3906,7 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
     *detailsFound = true;
   }
 
-  String trackingCallsign = flight["ident_icao"] | "";
+  String trackingCallsign = flight["atc_ident"] | "";
   trackingCallsign.trim();
   bool validTrackingCallsign =
       !trackingCallsign.isEmpty() && trackingCallsign.length() <= 24;
@@ -3924,7 +3924,7 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
     Serial.printf("AeroAPI tracking callsign for %s: %s\n",
                   flightNumber.c_str(), trackingCallsign.c_str());
   } else {
-    Serial.printf("AeroAPI has no valid ICAO callsign for %s\n",
+    Serial.printf("AeroAPI has no valid ATC callsign for %s\n",
                   flightNumber.c_str());
   }
 
