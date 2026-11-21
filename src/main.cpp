@@ -3415,6 +3415,12 @@ bool flightPlanAeroStatusNeedsDepartureTime() {
          status.indexOf("delayed") >= 0;
 }
 
+bool flightPlanAeroStatusIsTaxiing() {
+  String status = flightPlanAeroStatus;
+  status.toLowerCase();
+  return status.indexOf("taxi") >= 0;
+}
+
 const char *flightPlanArrivalStatus() {
   String status = flightPlanAeroStatus;
   status.toLowerCase();
@@ -3539,8 +3545,13 @@ void drawFlightPlanStatsRow(int phase) {
   if (phase == 0) {
     if (!flightPlanHasLiveData) {
       const bool delayed = strcmp(status, "DELAYED") == 0;
+      const bool taxiing =
+          flightPlanAeroStatusIsTaxiing() &&
+          !flightPlanLegObservedAirborne &&
+          (!flightPlanHasLiveData || flightPlanAircraft.onGround);
       printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS,
-                           delayed ? "DELAYED" : "WAITING",
+                           delayed ? "DELAYED"
+                                   : (taxiing ? "TAXIING" : "WAITING"),
                            delayed ? colYellow : colStats);
       return;
     }
