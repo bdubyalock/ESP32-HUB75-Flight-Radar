@@ -56,6 +56,7 @@ const unsigned long CONFIG_WIFI_CONNECT_TIMEOUT_MS = 45000;
 const unsigned long CONFIG_SUCCESS_SSID_SCREEN_MS = 1500;
 const unsigned long CONFIG_SUCCESS_IP_SCREEN_MS = 2000;
 const unsigned long CONFIG_AP_SHUTDOWN_DELAY_MS = 30000;
+const unsigned long SETUP_WIFI_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 const int API_ERROR_FAIL_THRESHOLD = 30;
 const unsigned long NTP_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 const uint32_t NTP_INITIAL_WAIT_MS = 1000;
@@ -88,6 +89,7 @@ unsigned long lastFetchMs = 0;
 bool screensaverActive = false;
 bool wifiEverConnected = false;
 unsigned long lastWifiAttemptMs = 0;
+unsigned long lastSetupWifiRetryMs = 0;
 unsigned long lastNtpAttemptMs = 0;
 bool ntpAttemptMade = false;
 bool ntpTimeReceived = false;
@@ -95,6 +97,7 @@ String nearestCallsign = "----";
 String nearestAircraftType = "----";
 String nearestAircraftSquawk = "";
 String cachedRouteCallsign = "";
+String routeDisplay;
 char routeOrigin[4] = "---";
 char routeDest[4] = "---";
 bool hasRoute = false;
@@ -155,6 +158,7 @@ int trackedAircraftCount = 0;
 int displayAircraftIndex = 0;
 unsigned long lastDisplayCycleMs = 0;
 unsigned long aircraftDisplayStartedMs = 0;
+unsigned long bottomRouteLastRenderMs = 0;
 unsigned long lastOpenSkyFetchMs = 0;
 bool openSkyFetchAttempted = false;
 String overheadRouteLookupCallsign;
@@ -211,6 +215,7 @@ unsigned long typeSlotStartedMs = 0;
 
 void refreshFlightDisplay();
 void showFlight();
+void drawBottomRouteRow();
 void drawAircraftDetailSlot();
 uint8_t activeBrightness();
 void clearRoute();
@@ -1718,6 +1723,7 @@ bool startConfigAccessPoint() {
 
   configAccessPointActive = true;
   configAccessPointShutdownAtMs = 0;
+  lastSetupWifiRetryMs = millis();
   display->fillScreen(colBlack);
   printClippedCentered(0, PANEL_RES_X, 0, "SETUP WIFI", colTextSecondary);
   printClippedCentered(0, PANEL_RES_X, 8, ssid.c_str(), colTextPrimary);
@@ -3241,6 +3247,13 @@ void updateBottomPhaseIfNeeded() {
   if (routePhase != bottomShowsRoutePhase) {
     bottomShowsRoutePhase = routePhase;
     showFlight();
+    return;
+  }
+
+  const int maxChars = PANEL_RES_X / TEXT_CHAR_W;
+  if (routePhase && routeDisplay.length() > static_cast<size_t>(maxChars) &&
+      millis() - bottomRouteLastRenderMs >= FLIGHT_PLAN_SCROLL_INTERVAL_MS) {
+    drawBottomRouteRow();
   }
 }
 
@@ -3257,13 +3270,8 @@ void drawBottomStatsRow() {
 }
 
 void drawBottomRouteRow() {
-  char routeBuf[16];
-  char routeFit[16];
-  snprintf(routeBuf, sizeof(routeBuf), "%s>%s", routeOrigin, routeDest);
-  int maxChars = (PANEL_RES_X - ROW_GAP_MIN * 2) / TEXT_CHAR_W;
-  copyTruncated(routeFit, sizeof(routeFit), routeBuf, maxChars);
-  LayoutSlot slot = {LAYOUT_TEXT, routeFit, colRoute};
-  drawCenteredColumnRow(FLIGHT_ROW_BOTTOM, &slot, 1);
+  drawFlightPlanScrollingRow(FLIGHT_ROW_BOTTOM, routeDisplay, colRoute);
+  bottomRouteLastRenderMs = millis();
 }
 
 void drawBottomPositionRow() {
@@ -4109,7 +4117,7 @@ bool fetchFlightPlanLocation(float latitude, float longitude) {
   if (place[0] == '\0') place = address["village"] | "";
   if (place[0] == '\0') place = address["hamlet"] | "";
   if (place[0] == '\0') place = address["suburb"] | "";
-  if (place[0] == '\0') place = address["municipality"] | "";
+  //if (place[0] == '\0') place = address["municipality"] | ""; //Remove annoying township responses
   if (place[0] == '\0') place = address["county"] | "";
 
   String location = place;
@@ -4467,6 +4475,7 @@ void pollFlightPlan() {
 void clearRoute() {
   strncpy(routeOrigin, "---", sizeof(routeOrigin));
   strncpy(routeDest, "---", sizeof(routeDest));
+  routeDisplay = "";
   hasRoute = false;
 }
 
@@ -4479,18 +4488,24 @@ bool parseRouteResponse(const String &payload, const String &callsign) {
   }
 
   const char *iata = doc[0]["_airport_codes_iata"] | "";
-  if (strlen(iata) < 7 || strcmp(iata, "unknown") == 0) {
+  const char *firstSeparator = strchr(iata, '>');
+  const char *lastSeparator = strrchr(iata, '>');
+  if (strlen(iata) < 7 || strcmp(iata, "unknown") == 0 ||
+      firstSeparator == nullptr || firstSeparator - iata != 3 ||
+      lastSeparator == nullptr ||
+      strlen(lastSeparator + 1) < 3) {
     Serial.printf("Route unknown for %s (iata=%s)\n", callsign.c_str(), iata);
     return false;
   }
 
   strncpy(routeOrigin, iata, 3);
   routeOrigin[3] = '\0';
-  strncpy(routeDest, iata + 4, 3);
+  strncpy(routeDest, lastSeparator + 1, 3);
   routeDest[3] = '\0';
+  routeDisplay = iata;
   hasRoute = true;
   cachedRouteCallsign = callsign;
-  Serial.printf("Route for %s: %s>%s\n", callsign.c_str(), routeOrigin, routeDest);
+  Serial.printf("Route for %s: %s\n", callsign.c_str(), routeDisplay.c_str());
   return true;
 }
 
@@ -4964,6 +4979,57 @@ bool connectWiFi(unsigned long timeoutMs) {
   return false;
 }
 
+void initializeConnectedOperation() {
+  startFlightMdns();
+  beginTimeSync(NTP_INITIAL_WAIT_MS);
+  startMqttClient();
+
+  if (fetchAircraftList()) {
+    refreshFlightDisplay();
+  } else {
+    handleFlightFetchResult(false);
+  }
+  lastFetchMs = millis();
+  lastDisplayCycleMs = millis();
+
+  if (trackedAircraftCount == 0) {
+    screensaverActive = true;
+    initQuietHours();
+    updateQuietHoursDisplay();
+  }
+}
+
+void updateSetupWifiRetry() {
+  if (!configAccessPointActive) {
+    return;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    configAccessPointActive = false;
+    configAccessPointShutdownAtMs = 0;
+    wifiEverConnected = true;
+    Serial.print("Saved Wi-Fi connection restored: ");
+    Serial.println(WiFi.localIP());
+    showStatus("WiFi OK", WiFi.localIP().toString().c_str());
+    initializeConnectedOperation();
+    return;
+  }
+
+  if (millis() - lastSetupWifiRetryMs < SETUP_WIFI_RETRY_INTERVAL_MS) {
+    return;
+  }
+
+  lastSetupWifiRetryMs = millis();
+  Serial.printf("Retrying saved Wi-Fi connection for SSID %s\n",
+                config.wifiSSID.c_str());
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(config.wifiSSID.c_str(), config.wifiPassword.c_str());
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -4989,27 +5055,8 @@ void setup() {
     return;
   }
 
-  startFlightMdns();
   setupConfigServer();
-  beginTimeSync(NTP_INITIAL_WAIT_MS);
-  startMqttClient();
-
-  // Initial fetch + render; loop() then keeps polling on schedule. Planes are
-  // shown whenever present (dimmed during quiet hours); otherwise the
-  // screensaver runs.
-  if (fetchAircraftList()) {
-    refreshFlightDisplay();
-  } else {
-    handleFlightFetchResult(false);
-  }
-  lastFetchMs = millis();
-  lastDisplayCycleMs = millis();
-
-  if (trackedAircraftCount == 0) {
-    screensaverActive = true;
-    initQuietHours();
-    updateQuietHoursDisplay();
-  }
+  initializeConnectedOperation();
 }
 
 void loop() {
@@ -5018,6 +5065,7 @@ void loop() {
   }
   updateConfigWifiChange();
   updateConfigAccessPoint();
+  updateSetupWifiRetry();
   updateTimeSync();
   updateOperatingModeFromFlightPlan();
 
