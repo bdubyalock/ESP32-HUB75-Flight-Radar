@@ -193,6 +193,10 @@ uint32_t flightPlanEta = 0;
 uint32_t flightPlanEtd = 0;
 uint32_t flightPlanScheduledEta = 0;
 uint32_t flightPlanEstimatedEta = 0;
+uint32_t flightPlanScheduledOff = 0;
+uint32_t flightPlanEstimatedOff = 0;
+uint32_t flightPlanScheduledOut = 0;
+uint32_t flightPlanEstimatedOut = 0;
 String flightPlanOrigin;
 String flightPlanDestination;
 String flightPlanTrackingCallsign;
@@ -200,6 +204,10 @@ String flightPlanResolvedCallsigns[4];
 String flightPlanAeroStatuses[4];
 uint32_t flightPlanScheduledEtas[4] = {};
 uint32_t flightPlanEstimatedEtas[4] = {};
+uint32_t flightPlanScheduledOffs[4] = {};
+uint32_t flightPlanEstimatedOffs[4] = {};
+uint32_t flightPlanScheduledOuts[4] = {};
+uint32_t flightPlanEstimatedOuts[4] = {};
 bool flightPlanAeroApiLandedByLeg[4] = {};
 String flightPlanLocation = "LOCATION UNKNOWN";
 String flightPlanAeroStatus;
@@ -1055,6 +1063,10 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanEtd = 0;
   flightPlanScheduledEta = 0;
   flightPlanEstimatedEta = 0;
+  flightPlanScheduledOff = 0;
+  flightPlanEstimatedOff = 0;
+  flightPlanScheduledOut = 0;
+  flightPlanEstimatedOut = 0;
   flightPlanOrigin = "";
   flightPlanDestination = "";
   flightPlanTrackingCallsign = "";
@@ -1064,6 +1076,10 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
     flightPlanAeroStatuses[index] = "";
     flightPlanScheduledEtas[index] = 0;
     flightPlanEstimatedEtas[index] = 0;
+    flightPlanScheduledOffs[index] = 0;
+    flightPlanEstimatedOffs[index] = 0;
+    flightPlanScheduledOuts[index] = 0;
+    flightPlanEstimatedOuts[index] = 0;
     flightPlanAeroApiLandedByLeg[index] = false;
   }
   flightPlanLocation = "LOCATION UNKNOWN";
@@ -3430,12 +3446,26 @@ const char *flightPlanArrivalStatus() {
   if (status.indexOf("delayed") >= 0 && !flightPlanLegObservedAirborne) {
     return "DELAYED";
   }
-  if (flightPlanScheduledEta == 0 || flightPlanEstimatedEta == 0) {
+  uint32_t scheduledTime = 0;
+  uint32_t estimatedTime = 0;
+  if (!flightPlanLegObservedAirborne) {
+    if (flightPlanAeroStatusIsTaxiing()) {
+      scheduledTime = flightPlanScheduledOff;
+      estimatedTime = flightPlanEstimatedOff;
+    } else {
+      scheduledTime = flightPlanScheduledOut;
+      estimatedTime = flightPlanEstimatedOut;
+    }
+  } else {
+    scheduledTime = flightPlanScheduledEta;
+    estimatedTime = flightPlanEstimatedEta;
+  }
+  if (scheduledTime == 0 || estimatedTime == 0) {
     return "STATUS N/A";
   }
 
-  int64_t delta = static_cast<int64_t>(flightPlanEstimatedEta) -
-                  static_cast<int64_t>(flightPlanScheduledEta);
+  int64_t delta = static_cast<int64_t>(estimatedTime) -
+                  static_cast<int64_t>(scheduledTime);
   if (delta < -900) {
     return "EARLY";
   }
@@ -3593,6 +3623,13 @@ void drawFlightPlanStatsRow(int phase) {
 }
 
 int flightPlanPositionPhase(unsigned long elapsedMs) {
+  const bool locationUnknown =
+      flightPlanLocation.isEmpty() ||
+      flightPlanLocation == "LOCATION UNKNOWN";
+  if (!flightPlanLegObservedAirborne && locationUnknown) {
+    return 0;
+  }
+
   const unsigned long cycleMs =
       FLIGHT_PLAN_DISPLAY_PHASE_MS +
       FLIGHT_PLAN_LOCATION_DISPLAY_PHASE_MS;
@@ -3680,8 +3717,7 @@ void drawFlightPlanDisplay() {
 
   drawFlightPlanBottomRows();
   unsigned long elapsedMs = millis() - flightPlanDisplayCycleStartedMs;
-  flightPlanLastPositionPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
+  flightPlanLastPositionPhase = flightPlanPositionPhase(elapsedMs);
   flightPlanLastStatsPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
   flightPlanLastBottomRenderMs = millis();
@@ -4006,6 +4042,23 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
     flightPlanDestination = destination;
   }
 
+  uint32_t scheduledOff = 0;
+  if (readAeroApiTimestamp(flight["scheduled_off"], scheduledOff)) {
+    flightPlanScheduledOff = scheduledOff;
+  }
+  uint32_t estimatedOff = 0;
+  if (readAeroApiTimestamp(flight["estimated_off"], estimatedOff)) {
+    flightPlanEstimatedOff = estimatedOff;
+  }
+  uint32_t scheduledOut = 0;
+  if (readAeroApiTimestamp(flight["scheduled_out"], scheduledOut)) {
+    flightPlanScheduledOut = scheduledOut;
+  }
+  uint32_t estimatedOut = 0;
+  if (readAeroApiTimestamp(flight["estimated_out"], estimatedOut)) {
+    flightPlanEstimatedOut = estimatedOut;
+  }
+
   uint32_t timestamp = 0;
   if (readAeroApiTimestamp(flight["estimated_out"], timestamp) ||
       readAeroApiTimestamp(flight["scheduled_out"], timestamp)) {
@@ -4031,6 +4084,12 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
       flightApiValueIsPresent(flight["actual_on"]) ||
       normalizedStatus.startsWith("arrived") ||
       normalizedStatus.startsWith("landed");
+  if (flightPlanCurrentIndex < 4) {
+    flightPlanScheduledOffs[flightPlanCurrentIndex] = flightPlanScheduledOff;
+    flightPlanEstimatedOffs[flightPlanCurrentIndex] = flightPlanEstimatedOff;
+    flightPlanScheduledOuts[flightPlanCurrentIndex] = flightPlanScheduledOut;
+    flightPlanEstimatedOuts[flightPlanCurrentIndex] = flightPlanEstimatedOut;
+  }
   flightPlanDisplayDirty = true;
   Serial.printf("AeroAPI itinerary updated for %s (%s>%s, status=%s)\n",
                 flightNumber.c_str(), flightPlanOrigin.c_str(),
@@ -4072,6 +4131,10 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
     flightPlanEtd = 0;
     flightPlanScheduledEta = 0;
     flightPlanEstimatedEta = 0;
+    flightPlanScheduledOff = 0;
+    flightPlanEstimatedOff = 0;
+    flightPlanScheduledOut = 0;
+    flightPlanEstimatedOut = 0;
     readUnixTimestamp(storedFlight["eta"], flightPlanEta);
     flightPlanScheduledEta = flightPlanEta;
     readUnixTimestamp(storedFlight["etd"], flightPlanEtd);
@@ -4108,6 +4171,10 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
     flightPlanAeroStatuses[index] = flightPlanAeroStatus;
     flightPlanScheduledEtas[index] = flightPlanScheduledEta;
     flightPlanEstimatedEtas[index] = flightPlanEstimatedEta;
+    flightPlanScheduledOffs[index] = flightPlanScheduledOff;
+    flightPlanEstimatedOffs[index] = flightPlanEstimatedOff;
+    flightPlanScheduledOuts[index] = flightPlanScheduledOut;
+    flightPlanEstimatedOuts[index] = flightPlanEstimatedOut;
     flightPlanAeroApiLandedByLeg[index] = flightPlanAeroApiLanded;
   }
 
@@ -4393,6 +4460,10 @@ void resetCurrentFlightPlanLeg() {
   flightPlanEtd = 0;
   flightPlanScheduledEta = 0;
   flightPlanEstimatedEta = 0;
+  flightPlanScheduledOff = 0;
+  flightPlanEstimatedOff = 0;
+  flightPlanScheduledOut = 0;
+  flightPlanEstimatedOut = 0;
   flightPlanOrigin = "";
   flightPlanDestination = "";
   flightPlanTrackingCallsign = "";
@@ -4405,6 +4476,14 @@ void resetCurrentFlightPlanLeg() {
         flightPlanScheduledEtas[flightPlanCurrentIndex];
     flightPlanEstimatedEta =
         flightPlanEstimatedEtas[flightPlanCurrentIndex];
+    flightPlanScheduledOff =
+        flightPlanScheduledOffs[flightPlanCurrentIndex];
+    flightPlanEstimatedOff =
+        flightPlanEstimatedOffs[flightPlanCurrentIndex];
+    flightPlanScheduledOut =
+        flightPlanScheduledOuts[flightPlanCurrentIndex];
+    flightPlanEstimatedOut =
+        flightPlanEstimatedOuts[flightPlanCurrentIndex];
     flightPlanAeroStatus = flightPlanAeroStatuses[flightPlanCurrentIndex];
     flightPlanAeroApiLanded =
         flightPlanAeroApiLandedByLeg[flightPlanCurrentIndex];
