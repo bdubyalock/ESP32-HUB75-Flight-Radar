@@ -3367,6 +3367,7 @@ bool formatUnixFlightTime(uint32_t timestamp, char *buffer,
 }
 
 void drawFlightPlanScrollingRow(int y, const String &text, uint16_t color) {
+  display->fillRect(0, y, PANEL_RES_X, TEXT_CHAR_H, colBlack);
   const int maxChars = PANEL_RES_X / TEXT_CHAR_W;
   if (text.length() <= static_cast<size_t>(maxChars)) {
     printClippedCentered(0, PANEL_RES_X, y, text.c_str(), color);
@@ -4496,6 +4497,14 @@ bool parseRouteResponse(const String &payload, const String &callsign) {
   }
   const char *lastSeparator =
       firstSeparator == nullptr ? nullptr : strrchr(iata, routeSeparator);
+  const char *secondSeparator =
+      firstSeparator == nullptr
+          ? nullptr
+          : strchr(firstSeparator + 1, routeSeparator);
+  const char *thirdSeparator =
+      secondSeparator == nullptr
+          ? nullptr
+          : strchr(secondSeparator + 1, routeSeparator);
   if (strlen(iata) < 7 || strcmp(iata, "unknown") == 0 ||
       firstSeparator == nullptr || firstSeparator - iata != 3 ||
       lastSeparator == nullptr ||
@@ -4504,11 +4513,18 @@ bool parseRouteResponse(const String &payload, const String &callsign) {
     return false;
   }
 
-  strncpy(routeOrigin, iata, 3);
+  const bool hasThreeAirports =
+      secondSeparator != nullptr && thirdSeparator == nullptr;
+  const char *originAirport =
+      hasThreeAirports ? firstSeparator + 1 : iata;
+  const char *destinationAirport =
+      hasThreeAirports ? secondSeparator + 1 : lastSeparator + 1;
+  strncpy(routeOrigin, originAirport, 3);
   routeOrigin[3] = '\0';
-  strncpy(routeDest, lastSeparator + 1, 3);
+  strncpy(routeDest, destinationAirport, 3);
   routeDest[3] = '\0';
   routeDisplay = iata;
+  routeDisplay.replace(routeSeparator, '>');
   hasRoute = true;
   cachedRouteCallsign = callsign;
   Serial.printf("Route for %s: %s\n", callsign.c_str(), routeDisplay.c_str());
