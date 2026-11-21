@@ -132,6 +132,8 @@ const unsigned long FLIGHT_PLAN_ETA_GRACE_SECONDS = 1800;
 const unsigned long FLIGHT_PLAN_LANDED_HOLD_MS = 5UL * 60 * 1000;
 const unsigned long FLIGHT_PLAN_ROUTE_RETRY_MS = 300000;
 const unsigned long FLIGHT_PLAN_DISPLAY_PHASE_MS = 5000;
+const unsigned long FLIGHT_PLAN_LOCATION_DISPLAY_PHASE_MS =
+    2 * FLIGHT_PLAN_DISPLAY_PHASE_MS;
 const unsigned long FLIGHT_PLAN_SCROLL_INTERVAL_MS = 350;
 const unsigned long FLIGHT_PLAN_LOCATION_LOOKUP_MS = 60000;
 
@@ -3419,7 +3421,7 @@ const char *flightPlanArrivalStatus() {
   if (status.indexOf("cancel") >= 0) {
     return "CANCELLED";
   }
-  if (status.indexOf("delayed") >= 0) {
+  if (status.indexOf("delayed") >= 0 && !flightPlanLegObservedAirborne) {
     return "DELAYED";
   }
   if (flightPlanScheduledEta == 0 || flightPlanEstimatedEta == 0) {
@@ -3579,11 +3581,17 @@ void drawFlightPlanStatsRow(int phase) {
   }
 }
 
+int flightPlanPositionPhase(unsigned long elapsedMs) {
+  const unsigned long cycleMs =
+      FLIGHT_PLAN_DISPLAY_PHASE_MS +
+      FLIGHT_PLAN_LOCATION_DISPLAY_PHASE_MS;
+  return elapsedMs % cycleMs < FLIGHT_PLAN_DISPLAY_PHASE_MS ? 0 : 1;
+}
+
 void drawFlightPlanBottomRows() {
   const unsigned long elapsedMs =
       millis() - flightPlanDisplayCycleStartedMs;
-  const int positionPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
+  const int positionPhase = flightPlanPositionPhase(elapsedMs);
   const int statsPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
   drawFlightPlanPositionRow(positionPhase);
@@ -3598,8 +3606,7 @@ void updateFlightPlanDisplayAlternation() {
 
   const unsigned long elapsedMs =
       millis() - flightPlanDisplayCycleStartedMs;
-  const int positionPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
+  const int positionPhase = flightPlanPositionPhase(elapsedMs);
   const int statsPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
   const bool scrollingLocation =
