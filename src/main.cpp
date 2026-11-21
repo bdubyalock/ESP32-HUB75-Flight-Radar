@@ -272,18 +272,21 @@ void setOperatingMode(OperatingMode mode) {
                                                : "flight plan");
 }
 
+bool flightPlanWithinValidityWindow() {
+  const time_t now = time(nullptr);
+  return flightPlanCount > 0 && now >= VALID_SYSTEM_TIME_EPOCH &&
+         static_cast<uint64_t>(now) >= flightPlanStartValidity &&
+         static_cast<uint64_t>(now) < flightPlanEndValidity;
+}
+
 void updateOperatingModeFromFlightPlan() {
   OperatingMode desiredMode = MODE_OVERHEAD_FLIGHTS;
-  time_t now = time(nullptr);
   bool landingHoldActive =
       flightPlanLandingHoldActive &&
       millis() - flightPlanLandingHoldStartedMs <
           FLIGHT_PLAN_LANDED_HOLD_MS;
   if (landingHoldActive ||
-      (flightPlanCount > 0 && !flightPlanCompleted &&
-       now >= VALID_SYSTEM_TIME_EPOCH &&
-       static_cast<uint64_t>(now) >= flightPlanStartValidity &&
-       static_cast<uint64_t>(now) < flightPlanEndValidity)) {
+      (!flightPlanCompleted && flightPlanWithinValidityWindow())) {
     desiredMode = MODE_FLIGHT_PLAN;
   }
 
@@ -500,6 +503,13 @@ void drawDisplayNotice() {
 
 bool updateDisplayNotice() {
   if (displayNotice == DISPLAY_NOTICE_NONE) {
+    return false;
+  }
+
+  if (displayNotice == DISPLAY_NOTICE_RECEIVED_MQTT &&
+      !flightPlanWithinValidityWindow()) {
+    displayNotice = DISPLAY_NOTICE_NONE;
+    displayNoticeHasRendered = false;
     return false;
   }
 
@@ -1094,10 +1104,17 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
     response["aeroApiLookupAttempted"] = aeroApiLookupAttempted;
     response["aeroApiEnrichedCount"] = aeroApiEnrichedCount;
   }
-  if (flightPlanCount > 0) {
+  const bool showReceivedNotice =
+      source == FLIGHT_PLAN_FROM_PORTAL ||
+      flightPlanWithinValidityWindow();
+  if (flightPlanCount > 0 && showReceivedNotice) {
     displayNotice = source == FLIGHT_PLAN_FROM_MQTT
                         ? DISPLAY_NOTICE_RECEIVED_MQTT
                         : DISPLAY_NOTICE_RECEIVED_PORTAL;
+    displayNoticeHasRendered = false;
+  } else if (source == FLIGHT_PLAN_FROM_MQTT &&
+             displayNotice == DISPLAY_NOTICE_RECEIVED_MQTT) {
+    displayNotice = DISPLAY_NOTICE_NONE;
     displayNoticeHasRendered = false;
   }
   return 200;
