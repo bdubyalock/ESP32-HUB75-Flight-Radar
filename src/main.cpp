@@ -4488,8 +4488,14 @@ bool parseRouteResponse(const String &payload, const String &callsign) {
   }
 
   const char *iata = doc[0]["_airport_codes_iata"] | "";
-  const char *firstSeparator = strchr(iata, '>');
-  const char *lastSeparator = strrchr(iata, '>');
+  char routeSeparator = '-';
+  const char *firstSeparator = strchr(iata, routeSeparator);
+  if (firstSeparator == nullptr) {
+    routeSeparator = '>';
+    firstSeparator = strchr(iata, routeSeparator);
+  }
+  const char *lastSeparator =
+      firstSeparator == nullptr ? nullptr : strrchr(iata, routeSeparator);
   if (strlen(iata) < 7 || strcmp(iata, "unknown") == 0 ||
       firstSeparator == nullptr || firstSeparator - iata != 3 ||
       lastSeparator == nullptr ||
