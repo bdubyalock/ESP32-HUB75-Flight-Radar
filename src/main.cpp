@@ -217,6 +217,7 @@ void refreshFlightDisplay();
 void showFlight();
 void drawBottomRouteRow();
 void drawAircraftDetailSlot();
+const char *flightPlanArrivalStatus();
 uint8_t activeBrightness();
 void clearRoute();
 void resetAircraftDisplayTimer();
@@ -3306,7 +3307,9 @@ void drawBottomLine() {
 void drawAircraftDetailSlot() {
   const char *aircraftType =
       operatingMode == MODE_FLIGHT_PLAN
-          ? (flightPlanHasLiveData ? flightPlanAircraft.type : "WAITING")
+          ? (flightPlanHasLiveData
+                 ? flightPlanAircraft.type
+                 : "NO DATA")
           : nearestAircraftType.c_str();
   const char *squawk =
       operatingMode == MODE_FLIGHT_PLAN
@@ -3386,9 +3389,19 @@ void drawFlightPlanScrollingRow(int y, const String &text, uint16_t color) {
   printClippedCentered(0, PANEL_RES_X, y, window, color);
 }
 
+bool flightPlanAeroStatusNeedsDepartureTime() {
+  String status = flightPlanAeroStatus;
+  status.toLowerCase();
+  return status.indexOf("scheduled") >= 0 ||
+         status.indexOf("delayed") >= 0;
+}
+
 const char *flightPlanArrivalStatus() {
   String status = flightPlanAeroStatus;
   status.toLowerCase();
+  if (status.indexOf("cancel") >= 0) {
+    return "CANCELLED";
+  }
   if (status.indexOf("delayed") >= 0) {
     return "DELAYED";
   }
@@ -3497,10 +3510,19 @@ void drawFlightPlanStatsRow(int phase) {
     return;
   }
 
+  const char *status = flightPlanArrivalStatus();
+  if (strcmp(status, "CANCELLED") == 0) {
+    printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS, "CANCELLED",
+                         colRed);
+    return;
+  }
+
   if (phase == 0) {
     if (!flightPlanHasLiveData) {
+      const bool delayed = strcmp(status, "DELAYED") == 0;
       printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS,
-                           "WAITING", colStats);
+                           delayed ? "DELAYED" : "WAITING",
+                           delayed ? colYellow : colStats);
       return;
     }
 
@@ -3518,26 +3540,23 @@ void drawFlightPlanStatsRow(int phase) {
     drawCenteredColumnRow(FLIGHT_ROW_STATS, stats, 2);
   } else if (phase == 1) {
     char eta[12] = "--:--Z";
-    uint32_t displayTime =
-        flightPlanHasLiveData && flightPlanAircraft.onGround
-            ? flightPlanEtd
-            : flightPlanEta;
+    const bool showEtd =
+        flightPlanAeroStatusNeedsDepartureTime() ||
+        (flightPlanHasLiveData && flightPlanAircraft.onGround);
+    uint32_t displayTime = showEtd ? flightPlanEtd : flightPlanEta;
     if (displayTime > 0) {
       formatUnixFlightTime(displayTime, eta, sizeof(eta));
     }
     char timeLine[16];
-    snprintf(timeLine, sizeof(timeLine), "%s %s",
-             flightPlanHasLiveData && flightPlanAircraft.onGround ? "ETD"
-                                                                  : "ETA",
+    snprintf(timeLine, sizeof(timeLine), "%s %s", showEtd ? "ETD" : "ETA",
              eta);
     printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS, timeLine,
                          colStats);
   } else {
-    const char *status = flightPlanArrivalStatus();
     uint16_t statusColor =
-        strcmp(status, "DELAYED") == 0 || strcmp(status, "LATE") == 0
-            ? colStatsCaution
-            : colStats;
+        strcmp(status, "DELAYED") == 0
+            ? colYellow
+            : (strcmp(status, "LATE") == 0 ? colStatsCaution : colStats);
     printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS, status,
                          statusColor);
   }
