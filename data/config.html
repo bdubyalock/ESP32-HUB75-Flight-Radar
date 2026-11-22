@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flight Tracker Config Panel</title>
 
+    <script src="/version.js"></script> <!-- Loads FIRMWARE_VERSION from LittleFS -->
+
     <style>
     :root {
       --ink: #07131d;
@@ -412,7 +414,7 @@
    <main class="content-frame" aria-labelledby="page-title">
     <header class="top-bar">
      <div>
-      <div class="eyebrow"><i data-lucide="radar"></i> <span>Ground Systems Console</span> <span>V2.3.1</span>
+      <div class="eyebrow"><i data-lucide="radar"></i> <span>Ground Systems Console V</span> <span id="fw-ver"></span>
       </div>
       <h1 class="title">Aviation Config Panel</h1>
       <p class="subtitle">Manage network, flight tracking, and live traffic settings.</p>
@@ -551,10 +553,13 @@
       </form>
      </article>
     </section>
-    <footer class="footer-note"><i data-lucide="shield-check" aria-hidden="true"></i> <span>Local validation console • Verify all routing details before deployment</span>
+    <footer class="footer-note"><i data-lucide="shield-check" aria-hidden="true"></i> <span>Local validation console • Verify all routing details before deployment • <a href="/about.html">About this Flight Tracker</a></span>
     </footer>
    </main>
   </div>
+  <script>
+        document.getElementById("fw-ver").textContent = FIRMWARE_VERSION;
+    </script>
   <script>
     function showMessage(messageElement, iconElement, textElement, type, text) {
       messageElement.classList.remove("error", "success");

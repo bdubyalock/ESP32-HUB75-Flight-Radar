@@ -5442,7 +5442,8 @@ void setup() {
   runColorTest();
 #endif
 
-  showStatus("ESP32", "Flight Radar");
+  showStatus("FlightRadar", FIRMWARE_VERSION); //This says its undefined, but its defined through the python build script
+  delay(500);
 
   if (!connectWiFi(30000)) {
     if (startConfigAccessPoint()) {
