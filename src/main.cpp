@@ -130,6 +130,7 @@ const unsigned long FLIGHT_PLAN_POLL_INTERVAL_MS = 15000;
 const unsigned long AEROAPI_RETRY_INTERVAL_MS = 10UL * 60UL * 1000UL;
 const unsigned long FLIGHT_PLAN_ETA_GRACE_SECONDS = 1800;
 const unsigned long FLIGHT_PLAN_LANDED_HOLD_MS = 5UL * 60 * 1000;
+const uint8_t FLIGHT_PLAN_LANDED_CONFIRMATION_COUNT = 3;
 const unsigned long FLIGHT_PLAN_ROUTE_RETRY_MS = 300000;
 const unsigned long FLIGHT_PLAN_DISPLAY_PHASE_MS = 5000;
 const unsigned long FLIGHT_PLAN_LOCATION_DISPLAY_PHASE_MS =
@@ -183,6 +184,8 @@ bool flightPlanLegObservedAirborne = false;
 bool flightPlanHasLiveData = false;
 bool flightPlanAeroApiLanded = false;
 bool flightPlanAdsbLanded = false;
+uint8_t flightPlanAdsbLandedMessageCount = 0;
+char flightPlanAdsbLandedIcao24[7] = "";
 bool flightPlanLandingHoldActive = false;
 unsigned long flightPlanLandingHoldStartedMs = 0;
 bool flightPlanTrackingCallsignResolved = false;
@@ -1057,6 +1060,8 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanHasLiveData = false;
   flightPlanAeroApiLanded = false;
   flightPlanAdsbLanded = false;
+  flightPlanAdsbLandedMessageCount = 0;
+  flightPlanAdsbLandedIcao24[0] = '\0';
   flightPlanLandingHoldActive = false;
   flightPlanLandingHoldStartedMs = 0;
   flightPlanRouteLookupAttempted = false;
@@ -2959,7 +2964,8 @@ uint16_t altitudeColor() {
 
 // Small arrow centered at (cx, cy) pointing toward a compass octant, showing
 // where the aircraft sits relative to the receiver (e.g. SW -> down-left).
-void drawCompassArrow(int cx, int cy, int octant, uint16_t color) {
+void drawCompassArrow(int cx, int cy, int octant, uint16_t color,
+                      int radius = 2) {
   static const int dirs[8][2] = {
       {0, -1},   // N
       {1, -1},   // NE
@@ -2972,10 +2978,9 @@ void drawCompassArrow(int cx, int cy, int octant, uint16_t color) {
   };
   int dx = dirs[octant & 7][0];
   int dy = dirs[octant & 7][1];
-  const int r = 2;
-  int tipX = cx + dx * r;
-  int tipY = cy + dy * r;
-  display->drawLine(cx - dx * r, cy - dy * r, tipX, tipY, color);
+  int tipX = cx + dx * radius;
+  int tipY = cy + dy * radius;
+  display->drawLine(cx - dx * radius, cy - dy * radius, tipX, tipY, color);
   // Two barbs angled back from the tip to form the arrowhead.
   display->drawLine(tipX, tipY, tipX - dx - dy, tipY - dy + dx, color);
   display->drawLine(tipX, tipY, tipX - dx + dy, tipY - dy - dx, color);
@@ -3578,6 +3583,33 @@ void drawFlightPlanPositionRow(int phase) {
   }
 }
 
+bool flightPlanAircraftInFlight() {
+  return flightPlanHasLiveData && !flightPlanAircraft.onGround;
+}
+
+int flightPlanStatsPhase(unsigned long elapsedMs) {
+  const int phaseCount = flightPlanAircraftInFlight() ? 4 : 3;
+  return static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) %
+                          phaseCount);
+}
+
+void drawFlightPlanSecondaryTrackInfo() {
+  display->fillRect(0, FLIGHT_ROW_STATS, PANEL_RES_X, TEXT_CHAR_H, colBlack);
+
+  char verticalSpeed[16];
+  snprintf(verticalSpeed, sizeof(verticalSpeed), "VS%+dfpm",
+           flightPlanAircraft.verticalRateFpm);
+  printClippedCentered(0, PANEL_RES_X - 4, FLIGHT_ROW_STATS, verticalSpeed,
+                       colStats);
+
+  if (flightPlanAircraft.track >= 0.0f &&
+      flightPlanAircraft.track <= 360.0f) {
+    drawCompassArrow(PANEL_RES_X - 2,
+                     FLIGHT_ROW_STATS + TEXT_CHAR_H / 2,
+                     bearingOctant(flightPlanAircraft.track), colRoute, 1);
+  }
+}
+
 void drawFlightPlanStatsRow(int phase) {
   display->fillRect(0, FLIGHT_ROW_STATS, PANEL_RES_X, TEXT_CHAR_H, colBlack);
   if (flightPlanLandingHoldActive &&
@@ -3589,13 +3621,19 @@ void drawFlightPlanStatsRow(int phase) {
   }
 
   const char *status = flightPlanArrivalStatus();
+  const bool inFlight = flightPlanAircraftInFlight();
   if (strcmp(status, "CANCELLED") == 0) {
     printClippedCentered(0, PANEL_RES_X, FLIGHT_ROW_STATS, "CANCELLED",
                          colRed);
     return;
   }
 
-  if (phase == 0) {
+  if (inFlight && phase == 3) {
+    drawFlightPlanSecondaryTrackInfo();
+    return;
+  }
+
+  if (phase == 0 || (inFlight && phase == 2)) {
     if (!flightPlanHasLiveData) {
       const bool delayed = strcmp(status, "DELAYED") == 0;
       const bool taxiing =
@@ -3621,7 +3659,7 @@ void drawFlightPlanStatsRow(int phase) {
         {LAYOUT_TEXT, altBuf, altitudeColor()},
     };
     drawCenteredColumnRow(FLIGHT_ROW_STATS, stats, 2);
-  } else if (phase == 1) {
+  } else if (!inFlight && phase == 1) {
     char eta[12] = "--:--Z";
     const bool showEtd =
         flightPlanAeroStatusNeedsDepartureTime() ||
@@ -3663,8 +3701,7 @@ void drawFlightPlanBottomRows() {
   const unsigned long elapsedMs =
       millis() - flightPlanDisplayCycleStartedMs;
   const int positionPhase = flightPlanPositionPhase(elapsedMs);
-  const int statsPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
+  const int statsPhase = flightPlanStatsPhase(elapsedMs);
   drawFlightPlanPositionRow(positionPhase);
   drawFlightPlanStatsRow(statsPhase);
 }
@@ -3696,8 +3733,7 @@ void updateFlightPlanDisplayAlternation() {
   const unsigned long elapsedMs =
       millis() - flightPlanDisplayCycleStartedMs;
   const int positionPhase = flightPlanPositionPhase(elapsedMs);
-  const int statsPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
+  const int statsPhase = flightPlanStatsPhase(elapsedMs);
   const int callsignPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
   if (callsignPhase != flightPlanLastCallsignPhase) {
@@ -3775,8 +3811,7 @@ void drawFlightPlanDisplay() {
 
   drawFlightPlanBottomRows();
   flightPlanLastPositionPhase = flightPlanPositionPhase(elapsedMs);
-  flightPlanLastStatsPhase =
-      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
+  flightPlanLastStatsPhase = flightPlanStatsPhase(elapsedMs);
   flightPlanLastCallsignPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
   flightPlanLastBottomRenderMs = millis();
@@ -4222,6 +4257,9 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
     flightPlanTrackingCallsignIsAtcIdent = false;
     flightPlanAeroStatus = "";
     flightPlanAeroApiLanded = false;
+    flightPlanAdsbLanded = false;
+    flightPlanAdsbLandedMessageCount = 0;
+    flightPlanAdsbLandedIcao24[0] = '\0';
 
     bool detailsFound = false;
     lookupAttempted = true;
@@ -4400,12 +4438,40 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
     flightPlanAircraft = snapshot;
     flightPlanHasLiveData = true;
     if (!snapshot.onGround) {
+      flightPlanAdsbLandedMessageCount = 0;
+      flightPlanAdsbLandedIcao24[0] = '\0';
       flightPlanLegObservedAirborne = true;
       flightPlanAdsbLanded = false;
-    } else if (flightPlanLegObservedAirborne ||
-               (flightPlanEta > 0 &&
-                time(nullptr) >= static_cast<time_t>(flightPlanEta))) {
-      flightPlanAdsbLanded = true;
+    } else if ((flightPlanLegObservedAirborne ||
+                (flightPlanEta > 0 &&
+                 time(nullptr) >= static_cast<time_t>(flightPlanEta))) &&
+               strlen(snapshot.icao24) == 6) {
+      if (flightPlanAdsbLandedMessageCount > 0 &&
+          snapshot.icao24[0] != '\0' &&
+          strcasecmp(snapshot.icao24, flightPlanAdsbLandedIcao24) != 0) {
+        flightPlanAdsbLandedMessageCount = 0;
+      }
+      if (flightPlanAdsbLandedMessageCount == 0) {
+        copyStringField(flightPlanAdsbLandedIcao24,
+                        sizeof(flightPlanAdsbLandedIcao24), snapshot.icao24);
+      }
+      if (flightPlanAdsbLandedMessageCount <
+          FLIGHT_PLAN_LANDED_CONFIRMATION_COUNT) {
+        flightPlanAdsbLandedMessageCount++;
+      }
+      flightPlanAdsbLanded =
+          flightPlanAdsbLandedMessageCount >=
+          FLIGHT_PLAN_LANDED_CONFIRMATION_COUNT;
+      Serial.printf("ADSB.lol landed confirmation for %s: %u/%u\n",
+                    flightNumber.c_str(),
+                    static_cast<unsigned int>(
+                        flightPlanAdsbLandedMessageCount),
+                    static_cast<unsigned int>(
+                        FLIGHT_PLAN_LANDED_CONFIRMATION_COUNT));
+    } else {
+      flightPlanAdsbLandedMessageCount = 0;
+      flightPlanAdsbLandedIcao24[0] = '\0';
+      flightPlanAdsbLanded = false;
     }
     flightPlanDisplayDirty = true;
     Serial.printf("ADSB.lol tracked %s: %s, %d ft, %.0f kt\n",
@@ -4415,6 +4481,9 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
     return true;
   }
 
+  flightPlanAdsbLandedMessageCount = 0;
+  flightPlanAdsbLandedIcao24[0] = '\0';
+  flightPlanAdsbLanded = false;
   flightPlanDisplayDirty = true;
   Serial.printf("ADSB.lol has no live aircraft for %s\n",
                 flightNumber.c_str());
@@ -4551,6 +4620,8 @@ void resetCurrentFlightPlanLeg() {
   flightPlanHasLiveData = false;
   flightPlanAeroApiLanded = false;
   flightPlanAdsbLanded = false;
+  flightPlanAdsbLandedMessageCount = 0;
+  flightPlanAdsbLandedIcao24[0] = '\0';
   flightPlanLandingHoldActive = false;
   flightPlanLandingHoldStartedMs = 0;
   flightPlanTrackingCallsignResolved = false;
@@ -4705,7 +4776,7 @@ void pollFlightPlan() {
   bool etaFallback = flightPlanEta > 0 &&
                      now >= static_cast<time_t>(flightPlanEta) +
                                 FLIGHT_PLAN_ETA_GRACE_SECONDS &&
-                     (!flightPlanHasLiveData || flightPlanAircraft.onGround);
+                     !flightPlanHasLiveData;
   if (flightPlanAeroApiLanded || flightPlanAdsbLanded || etaFallback) {
     beginFlightPlanLandingHold(flightNumber);
   }
