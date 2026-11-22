@@ -64,6 +64,7 @@ const uint32_t NTP_RETRY_WAIT_MS = 250;
 const time_t VALID_SYSTEM_TIME_EPOCH = 1577836800;
 const size_t MQTT_MAX_PAYLOAD_SIZE = 4096;
 const unsigned long MQTT_KEEPALIVE_INTERVAL_MS = 30000;
+const unsigned long MQTT_RETRY_INTERVAL_MS = 2UL * 60UL * 1000UL;
 const uint16_t MQTT_SUBSCRIBE_PACKET_ID = 1;
 const unsigned long DISPLAY_NOTICE_DURATION_MS = 5000;
 unsigned long lastMqttKeepAliveMs = 0;
@@ -1434,7 +1435,7 @@ void startMqttClient() {
     return;
   }
   if (lastMqttStartAttemptMs != 0 &&
-      millis() - lastMqttStartAttemptMs < 5000) {
+      millis() - lastMqttStartAttemptMs < MQTT_RETRY_INTERVAL_MS) {
     return;
   }
   lastMqttStartAttemptMs = millis();
