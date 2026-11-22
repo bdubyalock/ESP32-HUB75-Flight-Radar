@@ -3597,16 +3597,16 @@ void drawFlightPlanSecondaryTrackInfo() {
   display->fillRect(0, FLIGHT_ROW_STATS, PANEL_RES_X, TEXT_CHAR_H, colBlack);
 
   char verticalSpeed[16];
-  snprintf(verticalSpeed, sizeof(verticalSpeed), "VS%+dfpm",
+  snprintf(verticalSpeed, sizeof(verticalSpeed), "%+dfpm",
            flightPlanAircraft.verticalRateFpm);
-  printClippedCentered(0, PANEL_RES_X - 4, FLIGHT_ROW_STATS, verticalSpeed,
+  printClippedCentered(0, PANEL_RES_X - 10, FLIGHT_ROW_STATS, verticalSpeed,
                        colStats);
 
   if (flightPlanAircraft.track >= 0.0f &&
       flightPlanAircraft.track <= 360.0f) {
-    drawCompassArrow(PANEL_RES_X - 2,
+    drawCompassArrow(PANEL_RES_X - 5,
                      FLIGHT_ROW_STATS + TEXT_CHAR_H / 2,
-                     bearingOctant(flightPlanAircraft.track), colRoute, 1);
+                     bearingOctant(flightPlanAircraft.track), colRoute);
   }
 }
 
