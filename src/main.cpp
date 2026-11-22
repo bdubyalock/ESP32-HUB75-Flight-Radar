@@ -116,6 +116,7 @@ int lastApiHttpCode = 0;
 bool lastApiParseFailed = false;
 bool hasFlightData = false;
 int consecutiveFetchFailures = 0;
+String AdsbRetryHeader = "";
 
 const uint16_t FLIGHT_FETCH_CONNECT_TIMEOUT_MS = 3000;
 const uint16_t FLIGHT_FETCH_TIMEOUT_MS = 5000;
@@ -1891,18 +1892,84 @@ void updateQuietHoursDisplay() {
   drawRadarIdle(radarSweep);
 }
 
+// Helper: Parses "Retry-After" (delta-seconds or HTTP-date) and returns wait time in ms
+unsigned long parseRetryAfterMs(String headerVal, unsigned long defaultMs = 5000) {
+  headerVal.trim();
+  if (headerVal.length() == 0) {
+    return defaultMs;
+  }
+
+  // 1. Check if purely numeric (delta-seconds, e.g., "60")
+  bool isNumeric = true;
+  for (unsigned int i = 0; i < headerVal.length(); i++) {
+    if (!isDigit(headerVal.charAt(i))) {
+      isNumeric = false;
+      break;
+    }
+  }
+
+  if (isNumeric) {
+    // Convert string to 64-bit int to avoid 32-bit overflow before * 1000
+    long long seconds = atoll(headerVal.c_str());
+    if (seconds <= 0) return 0;
+    return (unsigned long)(seconds * 1000ULL);
+  }
+
+  // 2. Otherwise, parse HTTP-date (e.g., "Mon, 23 Nov 2026 00:00:00 GMT")
+  // Note: Requires device clock to be synced via configTime() / NTP
+  struct tm tm = {0};
+  if (strptime(headerVal.c_str(), "%a, %d %b %Y %H:%M:%S", &tm) != NULL) {
+    // Convert UTC struct tm to epoch without timezone offset
+    // Temporarily set TZ to UTC for mktime()
+    char* oldTz = getenv("TZ");
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    time_t targetEpoch = mktime(&tm);
+    if (oldTz) {
+      setenv("TZ", oldTz, 1);
+    } else {
+      unsetenv("TZ");
+    }
+    tzset();
+
+    time_t nowEpoch;
+    time(&nowEpoch);
+
+    // Ensure NTP time is actually synced (year > 2020)
+    if (nowEpoch > VALID_SYSTEM_TIME_EPOCH && targetEpoch > nowEpoch) {
+      return (unsigned long)((targetEpoch - nowEpoch) * 1000ULL);
+    }
+  }
+
+  return defaultMs;
+}
+
 void showApiError() {
   char detail[12] = "Retrying";
+  bool wasRateLimit = false;
   if (lastApiParseFailed) {
     strncpy(detail, "Parse err", sizeof(detail) - 1);
   } else if (lastApiHttpCode == 429) {
     strncpy(detail, "Rate lim", sizeof(detail) - 1);
+    wasRateLimit = true;
   } else if (lastApiHttpCode > 0) {
     snprintf(detail, sizeof(detail), "HTTP %d", lastApiHttpCode);
   } else if (lastApiHttpCode < 0) {
     snprintf(detail, sizeof(detail), "Conn %d", lastApiHttpCode);
   }
-  showStatus("API ERR", detail);
+  if (wasRateLimit) {
+    showStatus("API ERR", detail);
+    unsigned long waitMs = parseRetryAfterMs(AdsbRetryHeader, 60000); // 60s
+    unsigned int waitSec = (waitMs + 999) / 1000; // Round up to next second;
+    String waitMsg = "WAIT " + String(waitSec) + " SEC";
+    printClippedCentered(0, PANEL_RES_X, 24, waitMsg.c_str(), colRed);
+    delay(waitMs); // Block for the wait period to avoid hammering the API
+    AdsbRetryHeader = ""; // Clear the header after waiting
+    wasRateLimit = false; // Reset the flag after waiting
+  }
+  else {
+    showStatus("API ERR", detail);
+  }
 }
 
 void uppercasePrefix(char *dest, const char *src, size_t len) {
@@ -5045,6 +5112,7 @@ bool fetchAircraftList() {
   url += String(radiusKm);
 
   HTTPClient http;
+  const char* headerKeys[] = {"Retry-After"};
   http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
   http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
   if (!http.begin(url)) {
@@ -5055,6 +5123,7 @@ bool fetchAircraftList() {
   }
   http.setUserAgent("Mozilla/5.0");
   http.addHeader("Accept", "application/json");
+  http.collectHeaders(headerKeys, 1);
 
   const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
@@ -5066,6 +5135,10 @@ bool fetchAircraftList() {
     lastApiParseFailed = false;
     lastApiHttpCode = statusCode;
     return false;
+  }
+
+  if (statusCode == 429) {
+    AdsbRetryHeader = http.header("Retry-After");
   }
 
   String payload = http.getString();
