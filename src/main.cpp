@@ -1965,6 +1965,8 @@ void showApiError() {
     String waitMsg = "WAIT" + String(waitSec) + "SEC";
     printClippedCentered(0, PANEL_RES_X, 24, waitMsg.c_str(), colRed);
     delay(waitMs); // Block for the wait period to avoid hammering the API
+    Serial.printf("API rate limit hit; waited %lu ms before retrying\n", waitMs);
+    Serial.printf("Retry-After header: '%s'\n", AdsbRetryHeader.c_str());
     AdsbRetryHeader = ""; // Clear the header after waiting
     wasRateLimit = false; // Reset the flag after waiting
   }
@@ -5447,7 +5449,7 @@ void setup() {
 #endif
 
   showStatus("FlightRadar", FIRMWARE_VERSION); //This says its undefined, but its defined through the python build script
-  delay(500);
+  delay(2000);
 
   if (!connectWiFi(30000)) {
     if (startConfigAccessPoint()) {
