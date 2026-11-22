@@ -3606,7 +3606,7 @@ void drawFlightPlanSecondaryTrackInfo() {
       flightPlanAircraft.track <= 360.0f) {
     drawCompassArrow(PANEL_RES_X - 5,
                      FLIGHT_ROW_STATS + TEXT_CHAR_H / 2,
-                     bearingOctant(flightPlanAircraft.track), colRoute);
+                     bearingOctant(flightPlanAircraft.track), colStats);
   }
 }
 
