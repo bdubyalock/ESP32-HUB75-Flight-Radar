@@ -5397,7 +5397,15 @@ void updateSetupWifiRetry() {
     return;
   }
 
+  if (millis() - lastSetupWifiRetryMs < SETUP_WIFI_RETRY_INTERVAL_MS) {
+    return;
+  }
+
+  lastSetupWifiRetryMs = millis();
+
   if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("Retrying saved Wi-Fi connection for SSID %s\n",
+                config.wifiSSID.c_str());
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     configAccessPointActive = false;
@@ -5410,13 +5418,8 @@ void updateSetupWifiRetry() {
     return;
   }
 
-  if (millis() - lastSetupWifiRetryMs < SETUP_WIFI_RETRY_INTERVAL_MS) {
-    return;
-  }
-
-  lastSetupWifiRetryMs = millis();
-  Serial.printf("Retrying saved Wi-Fi connection for SSID %s\n",
-                config.wifiSSID.c_str());
+  
+  Serial.println("WiFi reconnect failed. Keeping configuration AP active.");
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
