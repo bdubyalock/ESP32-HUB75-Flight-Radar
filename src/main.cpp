@@ -1460,7 +1460,7 @@ void startMqttClient() {
   }
 
   mqttWebSocket.onEvent(onMqttWebSocketEvent);
-  mqttWebSocket.setReconnectInterval(5000);
+  mqttWebSocket.setReconnectInterval(MQTT_RETRY_INTERVAL_MS);
   mqttWebSocket.enableHeartbeat(15000, 3000, 2);
   mqttWebSocket.beginSslWithCA(host.c_str(), config.mqttPort,
                                config.mqttWebSocketPath.c_str(),
@@ -1951,7 +1951,7 @@ void showApiError() {
   if (lastApiParseFailed) {
     strncpy(detail, "Parse err", sizeof(detail) - 1);
   } else if (lastApiHttpCode == 429) {
-    strncpy(detail, "Rate lim", sizeof(detail) - 1);
+    strncpy(detail, "Rate limit", sizeof(detail) - 1);
     wasRateLimit = true;
   } else if (lastApiHttpCode > 0) {
     snprintf(detail, sizeof(detail), "HTTP %d", lastApiHttpCode);
@@ -1962,7 +1962,7 @@ void showApiError() {
     showStatus("API ERR", detail);
     unsigned long waitMs = parseRetryAfterMs(AdsbRetryHeader, 60000); // 60s
     unsigned int waitSec = (waitMs + 999) / 1000; // Round up to next second;
-    String waitMsg = "WAIT " + String(waitSec) + " SEC";
+    String waitMsg = "WAIT" + String(waitSec) + "SEC";
     printClippedCentered(0, PANEL_RES_X, 24, waitMsg.c_str(), colRed);
     delay(waitMs); // Block for the wait period to avoid hammering the API
     AdsbRetryHeader = ""; // Clear the header after waiting
@@ -5132,14 +5132,17 @@ bool fetchAircraftList() {
                   url.c_str(), statusCode);
     Serial.print("WiFi IP: ");
     Serial.println(WiFi.localIP());
-    http.end();
     lastApiParseFailed = false;
     lastApiHttpCode = statusCode;
+    if (statusCode == 429) {
+      AdsbRetryHeader = http.header("Retry-After");
+      http.end();
+      showApiError();
+    }
+    else {
+      http.end();
+    }
     return false;
-  }
-
-  if (statusCode == 429) {
-    AdsbRetryHeader = http.header("Retry-After");
   }
 
   String payload = http.getString();
