@@ -1964,9 +1964,17 @@ void showApiError() {
     unsigned int waitSec = (waitMs + 999) / 1000; // Round up to next second;
     String waitMsg = "WAIT" + String(waitSec) + "SEC";
     printClippedCentered(0, PANEL_RES_X, 24, waitMsg.c_str(), colRed);
-    delay(waitMs); // Block for the wait period to avoid hammering the API
-    Serial.printf("API rate limit hit; waited %lu ms before retrying\n", waitMs);
+    Serial.printf("API rate limit hit: X-RateLimit-Reset %lu ms\n", waitMs);
     Serial.printf("Retry-After header: '%s'\n", AdsbRetryHeader.c_str());
+    if (waitMs > 300000) {
+      Serial.printf("Retry-After header indicates a long wait: %lu s\nRefreshing value in 5 minutes.", waitSec);
+      Serial.println("Configuration Panel is unavailable at this time");
+      delay(300000); // Block for 5 minutes then rerequest to update value
+    }
+    else {
+      delay(waitMs); // Block for the wait period
+      Serial.printf("Retrying after %lu s wait\nConfiguration Panel is unavailable at this time", waitSec);
+    }
     AdsbRetryHeader = ""; // Clear the header after waiting
     wasRateLimit = false; // Reset the flag after waiting
   }
