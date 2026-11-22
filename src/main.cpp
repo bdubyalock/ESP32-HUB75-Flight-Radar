@@ -5115,7 +5115,7 @@ bool fetchAircraftList() {
   url += String(radiusKm);
 
   HTTPClient http;
-  const char* headerKeys[] = {"Retry-After"};
+  const char* headerKeys[] = {"X-RateLimit-Reset"};
   http.setConnectTimeout(FLIGHT_FETCH_CONNECT_TIMEOUT_MS);
   http.setTimeout(FLIGHT_FETCH_TIMEOUT_MS);
   if (!http.begin(url)) {
@@ -5137,7 +5137,7 @@ bool fetchAircraftList() {
     lastApiParseFailed = false;
     lastApiHttpCode = statusCode;
     if (statusCode == 429) {
-      AdsbRetryHeader = http.header("Retry-After");
+      AdsbRetryHeader = http.header("X-RateLimit-Reset");
       http.end();
       showApiError();
     }
