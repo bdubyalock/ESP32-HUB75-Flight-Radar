@@ -185,6 +185,7 @@ bool flightPlanAdsbLanded = false;
 bool flightPlanLandingHoldActive = false;
 unsigned long flightPlanLandingHoldStartedMs = 0;
 bool flightPlanTrackingCallsignResolved = false;
+bool flightPlanTrackingCallsignIsAtcIdent = false;
 bool flightPlanRouteLookupAttempted = false;
 bool flightPlanAeroApiLookupPending = false;
 bool flightPlanAeroApiFallbackPending = false;
@@ -201,6 +202,7 @@ String flightPlanOrigin;
 String flightPlanDestination;
 String flightPlanTrackingCallsign;
 String flightPlanResolvedCallsigns[4];
+bool flightPlanResolvedCallsignIsAtcIdent[4] = {};
 String flightPlanAeroStatuses[4];
 uint32_t flightPlanScheduledEtas[4] = {};
 uint32_t flightPlanEstimatedEtas[4] = {};
@@ -219,6 +221,7 @@ unsigned long flightPlanDisplayCycleStartedMs = 0;
 unsigned long flightPlanLastBottomRenderMs = 0;
 int flightPlanLastPositionPhase = -1;
 int flightPlanLastStatsPhase = -1;
+int flightPlanLastCallsignPhase = -1;
 bool flightPlanDisplayDirty = true;
 bool showSquawkInTypeSlot = false;
 unsigned long typeSlotStartedMs = 0;
@@ -1071,8 +1074,10 @@ int storeFlightPlan(JsonDocument &request, JsonDocument &response,
   flightPlanDestination = "";
   flightPlanTrackingCallsign = "";
   flightPlanTrackingCallsignResolved = false;
+  flightPlanTrackingCallsignIsAtcIdent = false;
   for (uint8_t index = 0; index < 4; index++) {
     flightPlanResolvedCallsigns[index] = "";
+    flightPlanResolvedCallsignIsAtcIdent[index] = false;
     flightPlanAeroStatuses[index] = "";
     flightPlanScheduledEtas[index] = 0;
     flightPlanEstimatedEtas[index] = 0;
@@ -3646,6 +3651,24 @@ void drawFlightPlanBottomRows() {
   drawFlightPlanStatsRow(statsPhase);
 }
 
+bool getCurrentFlightPlanLeg(JsonDocument &plan, JsonObjectConst &flight);
+
+bool hasAlternateFlightPlanCallsign(const char *flightNumber) {
+  return !flightPlanTrackingCallsign.isEmpty() &&
+         !flightPlanTrackingCallsign.equalsIgnoreCase(flightNumber);
+}
+
+void drawFlightPlanCallsign(const char *flightNumber, bool showFallback) {
+  const char *displayCallsign =
+      showFallback && hasAlternateFlightPlanCallsign(flightNumber)
+          ? flightPlanTrackingCallsign.c_str()
+          : flightNumber;
+  display->fillRect(FLIGHT_TEXT_X, FLIGHT_ROW_CALLSIGN, FLIGHT_TEXT_W, 8,
+                    colBlack);
+  printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W, FLIGHT_ROW_CALLSIGN,
+                       displayCallsign, colCallsign);
+}
+
 void updateFlightPlanDisplayAlternation() {
   if (millis() - flightPlanLastBottomRenderMs <
       FLIGHT_PLAN_SCROLL_INTERVAL_MS) {
@@ -3657,6 +3680,20 @@ void updateFlightPlanDisplayAlternation() {
   const int positionPhase = flightPlanPositionPhase(elapsedMs);
   const int statsPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
+  const int callsignPhase =
+      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
+  if (callsignPhase != flightPlanLastCallsignPhase) {
+    JsonDocument plan;
+    JsonObjectConst flight;
+    if (getCurrentFlightPlanLeg(plan, flight)) {
+      const char *flightNumber = flight["flight"] | "UNKNOWN";
+      if (hasAlternateFlightPlanCallsign(flightNumber)) {
+        drawFlightPlanCallsign(flightNumber, callsignPhase == 1);
+      }
+    }
+    flightPlanLastCallsignPhase = callsignPhase;
+  }
+
   const bool scrollingLocation =
       positionPhase == 1 &&
       flightPlanLocation.length() > PANEL_RES_X / TEXT_CHAR_W;
@@ -3710,16 +3747,20 @@ void drawFlightPlanDisplay() {
   drawAirlineSymbol(flightNumber,
                     flightPlanHasLiveData &&
                         flightPlanAircraft.isHelicopter);
-  printClippedCentered(FLIGHT_TEXT_X, FLIGHT_TEXT_W,
-                       FLIGHT_ROW_CALLSIGN, flightNumber, colCallsign);
+  const unsigned long elapsedMs =
+      millis() - flightPlanDisplayCycleStartedMs;
+  const int callsignPhase =
+      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
+  drawFlightPlanCallsign(flightNumber, callsignPhase == 1);
   drawAircraftDetailSlot();
   drawFlightPlanProgressLine();
 
   drawFlightPlanBottomRows();
-  unsigned long elapsedMs = millis() - flightPlanDisplayCycleStartedMs;
   flightPlanLastPositionPhase = flightPlanPositionPhase(elapsedMs);
   flightPlanLastStatsPhase =
       static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 3);
+  flightPlanLastCallsignPhase =
+      static_cast<int>((elapsedMs / FLIGHT_PLAN_DISPLAY_PHASE_MS) % 2);
   flightPlanLastBottomRenderMs = millis();
 }
 
@@ -3822,6 +3863,21 @@ bool flightApiValueIsPresent(JsonVariantConst value) {
     return text != nullptr && text[0] != '\0';
   }
   return !value.isNull();
+}
+
+bool isValidTrackingCallsign(const String &callsign) {
+  if (callsign.isEmpty() || callsign.length() > 24) {
+    return false;
+  }
+  for (size_t index = 0; index < callsign.length(); index++) {
+    char character = callsign[index];
+    if (!((character >= 'A' && character <= 'Z') ||
+          (character >= 'a' && character <= 'z') ||
+          (character >= '0' && character <= '9'))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool fetchAeroApiFlightDetails(const String &flightNumber,
@@ -4007,24 +4063,29 @@ bool fetchAeroApiFlightDetails(const String &flightNumber,
 
   String trackingCallsign = flight["atc_ident"] | "";
   trackingCallsign.trim();
-  bool validTrackingCallsign =
-      !trackingCallsign.isEmpty() && trackingCallsign.length() <= 24;
-  for (size_t index = 0;
-       validTrackingCallsign && index < trackingCallsign.length(); index++) {
-    char character = trackingCallsign[index];
-    validTrackingCallsign =
-        (character >= 'A' && character <= 'Z') ||
-        (character >= 'a' && character <= 'z') ||
-        (character >= '0' && character <= '9');
-  }
-  if (validTrackingCallsign) {
+  if (isValidTrackingCallsign(trackingCallsign)) {
     flightPlanTrackingCallsign = trackingCallsign;
     flightPlanTrackingCallsignResolved = true;
+    flightPlanTrackingCallsignIsAtcIdent = true;
     Serial.printf("AeroAPI tracking callsign for %s: %s\n",
                   flightNumber.c_str(), trackingCallsign.c_str());
+  } else if (!flightPlanTrackingCallsignIsAtcIdent) {
+    String icaoIdent = flight["ident_icao"] | "";
+    icaoIdent.trim();
+    if (isValidTrackingCallsign(icaoIdent)) {
+      flightPlanTrackingCallsign = icaoIdent;
+      flightPlanTrackingCallsignResolved = true;
+      flightPlanTrackingCallsignIsAtcIdent = false;
+      Serial.printf("AeroAPI atc_ident unavailable for %s; using ident_icao: %s\n",
+                    flightNumber.c_str(), icaoIdent.c_str());
+    } else {
+      Serial.printf("AeroAPI has no valid ATC callsign or ICAO ident for %s\n",
+                    flightNumber.c_str());
+    }
   } else {
-    Serial.printf("AeroAPI has no valid ATC callsign for %s\n",
-                  flightNumber.c_str());
+    Serial.printf(
+        "AeroAPI has no valid ATC callsign for %s; retaining prior tracking callsign %s\n",
+        flightNumber.c_str(), flightPlanTrackingCallsign.c_str());
   }
 
   String origin = flight["origin"]["code_iata"] | "";
@@ -4140,6 +4201,7 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
     readUnixTimestamp(storedFlight["etd"], flightPlanEtd);
     flightPlanTrackingCallsign = "";
     flightPlanTrackingCallsignResolved = false;
+    flightPlanTrackingCallsignIsAtcIdent = false;
     flightPlanAeroStatus = "";
     flightPlanAeroApiLanded = false;
 
@@ -4168,6 +4230,8 @@ uint8_t enrichFlightPlanFromAeroApi(JsonDocument &plan, uint8_t flightCount,
       enrichedCount++;
     }
     flightPlanResolvedCallsigns[index] = flightPlanTrackingCallsign;
+    flightPlanResolvedCallsignIsAtcIdent[index] =
+        flightPlanTrackingCallsignIsAtcIdent;
     flightPlanAeroStatuses[index] = flightPlanAeroStatus;
     flightPlanScheduledEtas[index] = flightPlanScheduledEta;
     flightPlanEstimatedEtas[index] = flightPlanEstimatedEta;
@@ -4452,6 +4516,7 @@ void resetCurrentFlightPlanLeg() {
   flightPlanLandingHoldActive = false;
   flightPlanLandingHoldStartedMs = 0;
   flightPlanTrackingCallsignResolved = false;
+  flightPlanTrackingCallsignIsAtcIdent = false;
   flightPlanRouteLookupAttempted = false;
   flightPlanAeroApiLookupPending = false;
   flightPlanAeroApiFallbackPending = false;
@@ -4472,6 +4537,8 @@ void resetCurrentFlightPlanLeg() {
         flightPlanResolvedCallsigns[flightPlanCurrentIndex];
     flightPlanTrackingCallsignResolved =
         !flightPlanTrackingCallsign.isEmpty();
+    flightPlanTrackingCallsignIsAtcIdent =
+        flightPlanResolvedCallsignIsAtcIdent[flightPlanCurrentIndex];
     flightPlanScheduledEta =
         flightPlanScheduledEtas[flightPlanCurrentIndex];
     flightPlanEstimatedEta =
