@@ -153,6 +153,7 @@ struct AircraftSnapshot {
   int verticalRateFpm;
   bool onGround;
   bool isHelicopter;
+  bool hasAdsbSquawk;
 };
 
 AircraftSnapshot trackedAircraft[MAX_TRACKED_AIRCRAFT];
@@ -3110,6 +3111,18 @@ void copyStringField(char *dest, size_t destSize, const char *src) {
   dest[destSize - 1] = '\0';
 }
 
+bool isValidSquawk(const char *squawk) {
+  if (squawk == nullptr || strlen(squawk) != 4) {
+    return false;
+  }
+  for (int index = 0; index < 4; index++) {
+    if (squawk[index] < '0' || squawk[index] > '9') {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool parsePlaneSnapshot(JsonObject plane, AircraftSnapshot &snap,
                         bool includeGround = false) {
   memset(&snap, 0, sizeof(snap));
@@ -3140,6 +3153,11 @@ bool parsePlaneSnapshot(JsonObject plane, AircraftSnapshot &snap,
   copyStringField(snap.type, sizeof(snap.type), type);
   const char *icao24 = plane["hex"] | "";
   copyStringField(snap.icao24, sizeof(snap.icao24), icao24);
+  const char *squawk = plane["squawk"] | "";
+  if (isValidSquawk(squawk)) {
+    copyStringField(snap.squawk, sizeof(snap.squawk), squawk);
+    snap.hasAdsbSquawk = true;
+  }
 
   if ((plane["lat"].is<double>() || plane["lat"].is<int>()) &&
       (plane["lon"].is<double>() || plane["lon"].is<int>())) {
@@ -4326,6 +4344,8 @@ bool fetchFlightPlanLocation(float latitude, float longitude) {
 }
 
 bool fetchFlightPlanAircraft(const String &flightNumber) {
+  const bool hadPreviousLiveData = flightPlanHasLiveData;
+  const AircraftSnapshot previousAircraft = flightPlanAircraft;
   flightPlanHasLiveData = false;
   if (WiFi.status() != WL_CONNECTED) {
     return false;
@@ -4371,10 +4391,11 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
       continue;
     }
 
-    if (flightPlanHasLiveData && snapshot.icao24[0] != '\0' &&
-        strcasecmp(snapshot.icao24, flightPlanAircraft.icao24) == 0) {
+    if (!snapshot.hasAdsbSquawk && hadPreviousLiveData &&
+        !previousAircraft.hasAdsbSquawk && snapshot.icao24[0] != '\0' &&
+        strcasecmp(snapshot.icao24, previousAircraft.icao24) == 0) {
       copyStringField(snapshot.squawk, sizeof(snapshot.squawk),
-                      flightPlanAircraft.squawk);
+                      previousAircraft.squawk);
     }
     flightPlanAircraft = snapshot;
     flightPlanHasLiveData = true;
@@ -4398,6 +4419,22 @@ bool fetchFlightPlanAircraft(const String &flightNumber) {
   Serial.printf("ADSB.lol has no live aircraft for %s\n",
                 flightNumber.c_str());
   return true;
+}
+
+bool needsOpenSkySquawkFallback() {
+  if (operatingMode == MODE_FLIGHT_PLAN) {
+    return flightPlanHasLiveData && !flightPlanAircraft.hasAdsbSquawk &&
+           flightPlanAircraft.icao24[0] != '\0';
+  }
+  if (operatingMode == MODE_OVERHEAD_FLIGHTS) {
+    for (int index = 0; index < trackedAircraftCount; index++) {
+      if (!trackedAircraft[index].hasAdsbSquawk &&
+          trackedAircraft[index].icao24[0] != '\0') {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void updateFlightPlanDetails() {
@@ -4466,8 +4503,9 @@ void updateFlightPlanDetails() {
 
   const unsigned long nowMs = millis();
   const bool openSkyDue =
-      !openSkyFetchAttempted ||
-      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+      needsOpenSkySquawkFallback() &&
+      (!openSkyFetchAttempted ||
+       nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS);
   if (openSkyDue) {
     fetchOpenSkySquawks();
     flightPlanDisplayDirty = true;
@@ -4780,7 +4818,7 @@ bool fetchRoute(const String &callsign) {
 }
 
 bool fetchOpenSkySquawks() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED || !needsOpenSkySquawkFallback()) {
     return false;
   }
   if (openSkyFetchAttempted &&
@@ -4842,12 +4880,6 @@ bool fetchOpenSkySquawks() {
   }
 
   JsonArray states = response["states"].as<JsonArray>();
-  for (int i = 0; i < trackedAircraftCount; i++) {
-    trackedAircraft[i].squawk[0] = '\0';
-  }
-  if (flightPlanHasLiveData) {
-    flightPlanAircraft.squawk[0] = '\0';
-  }
 
   int matchedAircraft = 0;
   for (JsonArray state : states) {
@@ -4858,29 +4890,21 @@ bool fetchOpenSkySquawks() {
     const char *icao24 = state[0].as<const char *>();
     const char *squawk = state[14].as<const char *>();
     if (icao24 == nullptr || strlen(icao24) != 6 ||
-        squawk == nullptr || strlen(squawk) != 4) {
-      continue;
-    }
-    bool validSquawk = true;
-    for (int i = 0; i < 4; i++) {
-      if (squawk[i] < '0' || squawk[i] > '9') {
-        validSquawk = false;
-        break;
-      }
-    }
-    if (!validSquawk) {
+        !isValidSquawk(squawk)) {
       continue;
     }
 
     for (int i = 0; i < trackedAircraftCount; i++) {
-      if (trackedAircraft[i].icao24[0] != '\0' &&
+      if (!trackedAircraft[i].hasAdsbSquawk &&
+          trackedAircraft[i].icao24[0] != '\0' &&
           strcasecmp(trackedAircraft[i].icao24, icao24) == 0) {
         copyStringField(trackedAircraft[i].squawk,
                         sizeof(trackedAircraft[i].squawk), squawk);
         matchedAircraft++;
       }
     }
-    if (flightPlanHasLiveData && flightPlanAircraft.icao24[0] != '\0' &&
+    if (flightPlanHasLiveData && !flightPlanAircraft.hasAdsbSquawk &&
+        flightPlanAircraft.icao24[0] != '\0' &&
         strcasecmp(flightPlanAircraft.icao24, icao24) == 0) {
       copyStringField(flightPlanAircraft.squawk,
                       sizeof(flightPlanAircraft.squawk), squawk);
@@ -4905,8 +4929,9 @@ void updateOverheadDetails() {
 
   const unsigned long nowMs = millis();
   const bool openSkyDue =
-      !openSkyFetchAttempted ||
-      nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS;
+      needsOpenSkySquawkFallback() &&
+      (!openSkyFetchAttempted ||
+       nowMs - lastOpenSkyFetchMs >= OPEN_SKY_FETCH_INTERVAL_MS);
   if (openSkyDue) {
     if (fetchOpenSkySquawks()) {
       showFlight();
@@ -4999,6 +5024,8 @@ bool fetchAircraftList() {
       if (parsePlaneSnapshot(plane, snap)) {
         for (int i = 0; i < previousAircraftCount; i++) {
           if (snap.icao24[0] != '\0' &&
+              !snap.hasAdsbSquawk &&
+              !previousAircraft[i].hasAdsbSquawk &&
               strcasecmp(snap.icao24, previousAircraft[i].icao24) == 0) {
             copyStringField(snap.squawk, sizeof(snap.squawk),
                             previousAircraft[i].squawk);
