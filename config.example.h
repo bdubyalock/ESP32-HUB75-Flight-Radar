@@ -18,10 +18,10 @@
 #define TRACK_AIRBORNE_ONLY 1
 
 // Refresh aircraft list from API (milliseconds)
-#define REFRESH_INTERVAL_MS 150000  // 2.5 minutes
+#define REFRESH_INTERVAL_MS 180000  // 3 minutes - to avoid exceeding the 500/day rate limit from adsb.lol
 
 // Rotate displayed aircraft every N ms (no extra API call)
-#define DISPLAY_CYCLE_MS 20000
+#define DISPLAY_CYCLE_MS 14000
 
 // HUB75 panel configuration (64x32 on ESP32 Trinity)
 #define PANEL_RES_X 64
