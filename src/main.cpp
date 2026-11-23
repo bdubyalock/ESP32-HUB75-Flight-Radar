@@ -1794,6 +1794,7 @@ void updateConfigAccessPoint() {
   WiFi.mode(WIFI_STA);
   configAccessPointActive = false;
   configAccessPointShutdownAtMs = 0;
+  consecutiveFetchFailures = 0; //Reset counter to avoid immediate re-entry into AP mode
   Serial.println("Configuration access point stopped");
 }
 
