@@ -5471,7 +5471,7 @@ void setup() {
 #endif
 
   display->fillScreen(colBlack);
-  printClippedCentered(0, PANEL_RES_X, 0, "ESP32", colTextPrimary);
+  printClippedCentered(0, PANEL_RES_X, 0, "ESP32 HUB75", colTextPrimary);
   printClippedCentered(0, PANEL_RES_X, 8, "Flight", colTextPrimary);
   printClippedCentered(0, PANEL_RES_X, 16, "Radar", colTextPrimary);
   printClippedCentered(0, PANEL_RES_X, 24, FIRMWARE_VERSION, colTextSecondary);
