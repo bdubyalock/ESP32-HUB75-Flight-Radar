@@ -1823,7 +1823,7 @@ void setupConfigServer() {
     configServer.send(302, "text/plain", "");
   });
   configServer.on("/config.html", HTTP_GET, serveConfigurationPage);
-  configServer.on("/about.html", HTTP_GET, []() { serveOtherPage("/page2.html", "text/html"); });
+  configServer.on("/about.html", HTTP_GET, []() { serveOtherPage("/about.html", "text/html"); });
   configServer.on("/version.js", HTTP_GET, []() { serveOtherPage("/version.js", "application/javascript"); });
   configServer.on("/api/config", HTTP_GET, handleGetConfiguration);
   configServer.on("/api/config", HTTP_POST, handlePostConfiguration);
