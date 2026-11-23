@@ -1961,7 +1961,7 @@ void showApiError() {
   char detail[12] = "Retrying";
   bool wasRateLimit = false;
   if (lastApiParseFailed) {
-    strncpy(detail, "Parse err", sizeof(detail) - 1);
+    strncpy(detail, "Parse error", sizeof(detail) - 1);
   } else if (lastApiHttpCode == 429) {
     strncpy(detail, "Rate limit", sizeof(detail) - 1);
     wasRateLimit = true;
@@ -5159,6 +5159,7 @@ bool fetchAircraftList() {
     if (statusCode == 429) {
       AdsbRetryHeader = http.header("X-RateLimit-Reset");
       http.end();
+      consecutiveFetchFailures--; //Don't count rate-limit failures toward AP mode trigger
       showApiError();
     }
     else {
@@ -5468,7 +5469,12 @@ void setup() {
   runColorTest();
 #endif
 
-  showStatus("FlightRadar", FIRMWARE_VERSION); //This says its undefined, but its defined through the python build script
+  display->fillScreen(colBlack);
+  printClippedCentered(0, PANEL_RES_X, 0, "ESP32", colTextPrimary);
+  printClippedCentered(0, PANEL_RES_X, 8, "Flight", colTextPrimary);
+  printClippedCentered(0, PANEL_RES_X, 16, "Radar", colTextPrimary);
+  printClippedCentered(0, PANEL_RES_X, 24, FIRMWARE_VERSION, colTextSecondary);
+
   delay(2000);
 
   if (!connectWiFi(30000)) {
